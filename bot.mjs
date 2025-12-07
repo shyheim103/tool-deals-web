@@ -10,10 +10,7 @@ const serviceAccount = require('./service-account.json');
 
 // --- CONFIGURATION ---
 const APP_ID = 'production'; 
-
-// Filter: Must be 15% off (unless it's a BOGO/Special deal)
 const MIN_DISCOUNT_PERCENT = 15; 
-
 const YOUTUBE_CHANNEL_ID = 'UCsHob-KhV7vfi-MyoXBMhDg'; 
 
 const amazonParams = {
@@ -28,7 +25,6 @@ const IMPACT_CONFIG = {
   AccountSID: 'IRUYAEiFA6CW1885322jxLbyaj6NkCYkE1', 
   AuthToken: 'JvVxNnAHFDdHGyBnJP5wAy_jAj9K_pjZ',   
   Campaigns: {
-    // ID Number on the LEFT
     '8154': 'hd',         
     '11565': 'acme',      
     '9988': 'ace',        
@@ -78,6 +74,40 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// --- HELPER: SMART SAVE (Prevents Zombie Deals) ---
+async function saveSmartDeal(batch, docRef, data) {
+  try {
+    // 1. Check if deal exists
+    const docSnap = await docRef.get();
+    
+    // Always update 'lastSeen' so we know it's still active
+    data.lastSeen = Date.now();
+
+    if (!docSnap.exists()) {
+      // BRAND NEW DEAL: Set timestamp to Now (Bumps to top)
+      data.timestamp = Date.now();
+      batch.set(docRef, data, { merge: true });
+    } else {
+      const oldData = docSnap.data();
+      const oldPrice = parseFloat(oldData.price) || 0;
+      const newPrice = parseFloat(data.price) || 0;
+
+      // PRICE DROP: Update timestamp (Bumps to top)
+      if (Math.abs(newPrice - oldPrice) > 0.01) {
+         data.timestamp = Date.now();
+         batch.set(docRef, data, { merge: true });
+      } else {
+         // SAME PRICE: Do NOT update timestamp (Stays in place)
+         // We remove 'timestamp' from the payload so merge doesn't touch it
+         delete data.timestamp;
+         batch.set(docRef, data, { merge: true });
+      }
+    }
+  } catch (err) {
+    console.error("Smart Save Error:", err);
+  }
+}
+
 // --- HELPER: DEAL TYPE TAGGER ---
 function getDealType(title, description = '') {
   const t = (title + ' ' + description).toLowerCase();
@@ -93,24 +123,31 @@ function getDealType(title, description = '') {
 function categorizeItem(title) {
   const t = title.toLowerCase();
   if (t.includes('battery') || t.includes('charger') || t.includes('power pack')) return 'Batteries';
-  if (t.includes('drill') || t.includes('driver') || t.includes('impact')) return 'Power Tools';
-  if (t.includes('saw') || t.includes('grinder') || t.includes('sander')) return 'Power Tools';
-  if (t.includes('nailer') || t.includes('stapler') || t.includes('combo')) return 'Power Tools';
-  if (t.includes('vacuum') || t.includes('vac')) return 'Power Tools';
-  if (t.includes('light') || t.includes('lamp') || t.includes('flood') || t.includes('spot')) return 'Lighting';
-  if (t.includes('socket') || t.includes('ratchet') || t.includes('wrench')) return 'Hand Tools';
-  if (t.includes('plier') || t.includes('screwdriver') || t.includes('hammer') || t.includes('mallet')) return 'Hand Tools';
-  if (t.includes('tape') && t.includes('measure') || t.includes('level') || t.includes('square')) return 'Hand Tools';
+  if (t.includes('drill bit') || t.includes('driver bit') || t.includes('bit set') || t.includes('tip')) return 'Accessories';
+  if (t.includes('blade') || t.includes('grinding disc') || t.includes('cutoff wheel')) return 'Accessories';
+  if (t.includes('stand') || t.includes('mount') || t.includes('bracket') || t.includes('adapter')) return 'Accessories';
+  if (t.includes('nozzle') || t.includes('wand') || t.includes('hose') || t.includes('attachment')) return 'Accessories';
+  if (t.includes('bag') || t.includes('tote') || t.includes('bucket') || t.includes('organizer')) return 'Storage';
+  if (t.includes('tool box') || t.includes('storage') || t.includes('cabinet') || t.includes('chest')) return 'Storage';
+  if (t.includes('jacket') || t.includes('hoodie') || t.includes('gloves') || t.includes('heated')) return 'Apparel';
+  if (t.includes('boot') || t.includes('shoe') || t.includes('glasses') || t.includes('helmet')) return 'Apparel';
   if (t.includes('mower') || t.includes('lawn')) return 'Outdoor';
   if (t.includes('blower') || t.includes('leaf')) return 'Outdoor';
   if (t.includes('trimmer') || t.includes('edger') || t.includes('weed') || t.includes('wacker')) return 'Outdoor';
   if (t.includes('chainsaw') || t.includes('chain saw') || t.includes('pruner')) return 'Outdoor';
   if (t.includes('washer') && t.includes('pressure')) return 'Outdoor';
   if (t.includes('sprayer')) return 'Outdoor';
-  if (t.includes('box') || t.includes('storage') || t.includes('cabinet') || t.includes('chest')) return 'Storage';
-  if (t.includes('bag') || t.includes('tote') || t.includes('bucket') || t.includes('organizer')) return 'Storage';
-  if (t.includes('jacket') || t.includes('hoodie') || t.includes('gloves') || t.includes('heated')) return 'Apparel';
-  if (t.includes('boot') || t.includes('shoe') || t.includes('glasses') || t.includes('helmet')) return 'Apparel';
+  if (t.includes('impact wrench')) return 'Power Tools'; 
+  if (t.includes('drill') || t.includes('driver') || t.includes('impact')) return 'Power Tools';
+  if (t.includes('saw') || t.includes('circular') || t.includes('miter') || t.includes('hackzall')) return 'Power Tools';
+  if (t.includes('grinder') || t.includes('sander') || t.includes('polisher') || t.includes('buffer')) return 'Power Tools';
+  if (t.includes('nailer') || t.includes('stapler')) return 'Power Tools';
+  if (t.includes('combo') && (t.includes('kit') || t.includes('tool'))) return 'Power Tools';
+  if (t.includes('vacuum') || t.includes('vac')) return 'Power Tools';
+  if (t.includes('light') || t.includes('lamp') || t.includes('flood') || t.includes('spot')) return 'Lighting';
+  if (t.includes('socket') || t.includes('ratchet') || t.includes('wrench')) return 'Hand Tools';
+  if (t.includes('plier') || t.includes('screwdriver') || t.includes('hammer') || t.includes('mallet')) return 'Hand Tools';
+  if (t.includes('tape') && t.includes('measure') || t.includes('level') || t.includes('square')) return 'Hand Tools';
   return 'Other';
 }
 
@@ -130,11 +167,15 @@ async function fetchAmazon() {
         try {
           const data = await amazon.SearchItems(amazonParams, {
             Keywords: k.term, SearchIndex: 'All', ItemCount: 5,
-            Resources: ['Images.Primary.Large', 'ItemInfo.Title', 'Offers.Listings.Price']
+            Resources: ['Images.Primary.Large', 'ItemInfo.Title', 'Offers.Listings.Price', 'Offers.Listings.Availability.Type']
           });
           if (data.SearchResult?.Items) {
             for (const item of data.SearchResult.Items) {
               if (!item.Offers?.Listings[0]?.Price) continue;
+              
+              const availability = item.Offers.Listings[0].Availability?.Type;
+              if (availability && (availability.includes('OutOfStock') || availability.includes('Unavailable'))) continue;
+
               const price = parseFloat(item.Offers.Listings[0].Price.Amount);
               const originalPrice = price * 1.2; 
               const title = item.ItemInfo.Title.DisplayValue;
@@ -144,12 +185,13 @@ async function fetchAmazon() {
               if (dealType === 'Sale' && discount < MIN_DISCOUNT_PERCENT) continue;
 
               const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
-              batch.set(docRef, {
+              // USE SMART SAVE
+              await saveSmartDeal(batch, docRef, {
                 title: title, price: price, originalPrice: originalPrice, store: 'amz',
                 category: categorizeItem(title), dealType: dealType,
                 url: item.DetailPageURL, image: item.Images.Primary.Large.URL,
-                timestamp: Date.now(), hot: true
-              }, { merge: true });
+                hot: true, staffPick: false
+              });
               count++;
             }
           }
@@ -161,7 +203,7 @@ async function fetchAmazon() {
   } catch (e) { console.error("Amazon Error:", e.message); }
 }
 
-// --- 4. IMPACT FETCH (Strict) ---
+// --- 4. IMPACT FETCH ---
 async function fetchImpact() {
   console.log('🌍 Fetching Impact...');
   const batch = db.batch();
@@ -183,6 +225,12 @@ async function fetchImpact() {
               if (!storeCode) continue; 
               if (k.term === 'Husky' && storeCode !== 'hd') continue;
 
+              const stockStatus = String(item.Stock || '').toLowerCase();
+              if (stockStatus.includes('out') || stockStatus === '0' || stockStatus === 'false') {
+                  await getDealsCollection().doc(`imp-${item.Id}`).delete(); 
+                  continue;
+              }
+
               const price = parseFloat(item.CurrentPrice);
               let originalPrice = parseFloat(item.OriginalPrice);
               if (!originalPrice || isNaN(originalPrice)) originalPrice = price;
@@ -193,11 +241,12 @@ async function fetchImpact() {
               if (dealType === 'Sale' && discount < MIN_DISCOUNT_PERCENT) continue;
 
               const docRef = getDealsCollection().doc(`imp-${item.Id}`);
-              batch.set(docRef, {
+              // USE SMART SAVE
+              await saveSmartDeal(batch, docRef, {
                 title: item.Name, price: price, originalPrice: originalPrice, store: storeCode, 
                 category: categorizeItem(item.Name), dealType: dealType,
-                url: item.Url, image: item.ImageUrl, timestamp: Date.now(), hot: true
-              }, { merge: true });
+                url: item.Url, image: item.ImageUrl, hot: true, staffPick: false
+              });
               count++;
             }
         } catch (innerErr) { }
@@ -241,7 +290,6 @@ async function fetchYouTube() {
 async function run() {
   await fetchAmazon();
   await fetchImpact(); 
-  // REMOVED CJ AND AWIN
   await fetchYouTube();
   console.log("🏁 All updates complete.");
 }
