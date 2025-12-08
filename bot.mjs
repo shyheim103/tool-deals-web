@@ -10,7 +10,10 @@ const serviceAccount = require('./service-account.json');
 
 // --- CONFIGURATION ---
 const APP_ID = 'production'; 
+// Strict 15% discount filter (unless it's a special deal like BOGO)
 const MIN_DISCOUNT_PERCENT = 15; 
+
+// YOUR YOUTUBE CHANNEL ID
 const YOUTUBE_CHANNEL_ID = 'UCsHob-KhV7vfi-MyoXBMhDg'; 
 
 const amazonParams = {
@@ -25,16 +28,17 @@ const IMPACT_CONFIG = {
   AccountSID: 'IRUYAEiFA6CW1885322jxLbyaj6NkCYkE1', 
   AuthToken: 'JvVxNnAHFDdHGyBnJP5wAy_jAj9K_pjZ',   
   Campaigns: {
-    '8154': 'hd',         
-    '11565': 'acme',      
-    '9988': 'ace',        
-    '12894': 'tn',
-    '9383': 'walmart'
+    // Only the high-quality stores
+    '8154': 'hd',         // Home Depot
+    '11565': 'acme',      // Acme Tools
+    '9988': 'ace',        // Ace Hardware
+    '9383': 'walmart'     // Walmart
   }
 };
 
 // --- SMART SEARCH KEYWORDS ---
 const SMART_KEYWORDS = [
+  // --- THE BIG 3 ---
   { term: 'DeWalt 20V Kit', stores: ['all'] },
   { term: 'DeWalt XR', stores: ['all'] },
   { term: 'DeWalt PowerStack', stores: ['all'] },
@@ -43,26 +47,34 @@ const SMART_KEYWORDS = [
   { term: 'Milwaukee Packout', stores: ['all'] },
   { term: 'Makita 18V LXT', stores: ['all'] },
   { term: 'Makita 40V XGT', stores: ['all'] },
+
+  // --- PRO BRANDS ---
   { term: 'Flex 24V', stores: ['acme', 'lowes'] },
   { term: 'Flex Stacked Lithium', stores: ['acme', 'lowes'] },
-  { term: 'Flex Circular Saw', stores: ['acme', 'lowes'] },
+  { term: 'Flex Circular Saw', stores: ['acme', 'lowes'] }, 
   { term: 'Flex Impact Driver', stores: ['acme', 'lowes'] },
   { term: 'Metabo HPT MultiVolt', stores: ['amz', 'acme', 'lowes'] },
   { term: 'Metabo HPT Nailer', stores: ['amz', 'acme', 'lowes'] },
   { term: 'Bosch 18v', stores: ['all'] },
-  { term: 'Gearwrench', stores: ['all'] },
+  { term: 'Gearwrench Set', stores: ['all'] },
   { term: 'Klein Tools', stores: ['all'] },
+  
+  // --- STORE EXCLUSIVES ---
   { term: 'Ridgid 18v', stores: ['hd', 'direct'] }, 
   { term: 'Ryobi 18v One+', stores: ['hd', 'direct'] },
   { term: 'Ryobi 40v', stores: ['hd', 'direct'] },
   { term: 'Husky Tool Chest', stores: ['hd'] }, 
   { term: 'Husky Mechanics Set', stores: ['hd'] },
   { term: 'Kobalt 24v', stores: ['lowes'] }, 
+  
+  // --- WALMART / BUDGET ---
   { term: 'Greenworks 60v', stores: ['walmart', 'amz'] },
   { term: 'Greenworks 80v', stores: ['walmart', 'amz'] },
   { term: 'Hart 20v', stores: ['walmart'] },
   { term: 'Hart Storage', stores: ['walmart'] },
   { term: 'Hyper Tough 20v', stores: ['walmart'] },
+  
+  // --- OUTDOOR POWER ---
   { term: 'EGO Power+', stores: ['amz', 'acme', 'ace', 'lowes'] },
   { term: 'Skil PwrCore', stores: ['amz', 'acme', 'walmart'] }
 ];
@@ -74,32 +86,29 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// --- HELPER: SMART SAVE (Fixed for Admin SDK) ---
+// --- HELPER: SMART SAVE (CRITICAL FIX APPLIED) ---
 async function saveSmartDeal(batch, docRef, data) {
   try {
-    // 1. Check if deal exists
     const docSnap = await docRef.get();
-    
-    // Always update 'lastSeen' so we know it's still active
     data.lastSeen = Date.now();
 
-    // ERROR WAS HERE: Changed docSnap.exists() to docSnap.exists
+    // *** FIX: REMOVED PARENTHESES AFTER .exists ***
     if (!docSnap.exists) {
-      // BRAND NEW DEAL: Set timestamp to Now (Bumps to top)
+      // New Deal: Bump to top
       data.timestamp = Date.now();
       batch.set(docRef, data, { merge: true });
     } else {
+      // Existing Deal: Check for price drop
       const oldData = docSnap.data();
       const oldPrice = parseFloat(oldData.price) || 0;
       const newPrice = parseFloat(data.price) || 0;
 
-      // PRICE DROP: Update timestamp (Bumps to top)
       if (Math.abs(newPrice - oldPrice) > 0.01) {
+         // Price changed: Bump to top
          data.timestamp = Date.now();
          batch.set(docRef, data, { merge: true });
       } else {
-         // SAME PRICE: Do NOT update timestamp (Stays in place)
-         // We remove 'timestamp' from the payload so merge doesn't touch it
+         // Same price: Update lastSeen, but keep old timestamp (don't bump)
          delete data.timestamp;
          batch.set(docRef, data, { merge: true });
       }
@@ -186,7 +195,6 @@ async function fetchAmazon() {
               if (dealType === 'Sale' && discount < MIN_DISCOUNT_PERCENT) continue;
 
               const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
-              // USE SMART SAVE
               await saveSmartDeal(batch, docRef, {
                 title: title, price: price, originalPrice: originalPrice, store: 'amz',
                 category: categorizeItem(title), dealType: dealType,
@@ -204,7 +212,7 @@ async function fetchAmazon() {
   } catch (e) { console.error("Amazon Error:", e.message); }
 }
 
-// --- 4. IMPACT FETCH ---
+// --- 4. IMPACT FETCH (Strict & Kill Switch) ---
 async function fetchImpact() {
   console.log('🌍 Fetching Impact...');
   const batch = db.batch();
@@ -221,11 +229,13 @@ async function fetchImpact() {
               headers: { 'Accept': 'application/json', 'IR-Version': '15' }
             });
             const items = response.data.Items || [];
+            
             for (const item of items) {
               let storeCode = IMPACT_CONFIG.Campaigns[item.CampaignId];
               if (!storeCode) continue; 
               if (k.term === 'Husky' && storeCode !== 'hd') continue;
 
+              // STOCK KILL SWITCH
               const stockStatus = String(item.Stock || '').toLowerCase();
               if (stockStatus.includes('out') || stockStatus === '0' || stockStatus === 'false') {
                   await getDealsCollection().doc(`imp-${item.Id}`).delete(); 
@@ -242,7 +252,6 @@ async function fetchImpact() {
               if (dealType === 'Sale' && discount < MIN_DISCOUNT_PERCENT) continue;
 
               const docRef = getDealsCollection().doc(`imp-${item.Id}`);
-              // USE SMART SAVE
               await saveSmartDeal(batch, docRef, {
                 title: item.Name, price: price, originalPrice: originalPrice, store: storeCode, 
                 category: categorizeItem(item.Name), dealType: dealType,
