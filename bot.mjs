@@ -50,7 +50,7 @@ const SMART_KEYWORDS = [
   { term: 'Metabo HPT MultiVolt', stores: ['amz', 'acme', 'lowes'] },
   { term: 'Metabo HPT Nailer', stores: ['amz', 'acme', 'lowes'] },
   { term: 'Bosch 18v', stores: ['all'] },
-  { term: 'Gearwrench Set', stores: ['all'] },
+  { term: 'Gearwrench', stores: ['all'] },
   { term: 'Klein Tools', stores: ['all'] },
   { term: 'Ridgid 18v', stores: ['hd', 'direct'] }, 
   { term: 'Ryobi 18v One+', stores: ['hd', 'direct'] },
@@ -74,7 +74,7 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// --- HELPER: SMART SAVE (Prevents Zombie Deals) ---
+// --- HELPER: SMART SAVE (Fixed for Admin SDK) ---
 async function saveSmartDeal(batch, docRef, data) {
   try {
     // 1. Check if deal exists
@@ -83,7 +83,8 @@ async function saveSmartDeal(batch, docRef, data) {
     // Always update 'lastSeen' so we know it's still active
     data.lastSeen = Date.now();
 
-    if (!docSnap.exists()) {
+    // ERROR WAS HERE: Changed docSnap.exists() to docSnap.exists
+    if (!docSnap.exists) {
       // BRAND NEW DEAL: Set timestamp to Now (Bumps to top)
       data.timestamp = Date.now();
       batch.set(docRef, data, { merge: true });
