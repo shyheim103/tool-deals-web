@@ -165,7 +165,7 @@ function getDealsCollection() {
   return db.collection('deals');
 }
 
-// --- 3. AMAZON FETCH ---
+// --- 3. AMAZON FETCH (Widened Net) ---
 async function fetchAmazon() {
   console.log('📦 Fetching Amazon API...');
   const batch = db.batch();
@@ -175,8 +175,9 @@ async function fetchAmazon() {
       for (const k of SMART_KEYWORDS) {
         if (!k.stores.includes('all') && !k.stores.includes('amz')) continue;
         try {
+          // BUMPED TO 10 ITEMS (Max allowed per page)
           const data = await amazon.SearchItems(amazonParams, {
-            Keywords: k.term, SearchIndex: 'All', ItemCount: 5,
+            Keywords: k.term, SearchIndex: 'All', ItemCount: 10,
             Resources: ['Images.Primary.Large', 'ItemInfo.Title', 'Offers.Listings.Price', 'Offers.Listings.Availability.Type']
           });
           if (data.SearchResult?.Items) {

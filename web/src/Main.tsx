@@ -34,7 +34,7 @@ const STORE_MAP: Record<string, string> = {
   'Amazon': 'amz',
   'Home Depot': 'hd',
   "Lowe's": 'lowes',
-  'Walmart': 'walmart',
+  'Walmart': 'walmart'
 };
 
 const BRANDS = [
@@ -51,12 +51,11 @@ const STORE_COLORS: Record<string, string> = {
 
 // --- CASH BACK APPS ---
 const CASH_BACK_APPS = [
-  { name: 'Rakuten', url: 'https://www.rakuten.com/r/CHRISH3992?eeid=45830', color: 'bg-purple-600', offer: 'Get $50 Bonus' },
-  { name: 'TopCashback', url: 'https://www.topcashback.com/ref/tool%20deals', color: 'bg-red-600', offer: 'Get $15 Bonus' },
-  { name: 'Capital One', url: 'capitaloneshopping.com/r/29c6b616-3e4a-4951-9cdf-f3991d7bb2cc', color: 'bg-blue-800', offer: 'Get $60 Bonus' },
-  { name: 'RetailMeNot', url: 'www.retailmenot.com', color: 'bg-purple-800', offer: 'Cash Back' },
+  { name: 'Rakuten', url: 'YOUR_RAKUTEN_LINK', color: 'bg-purple-600', offer: 'Get $50 Bonus' },
+  { name: 'TopCashback', url: 'YOUR_TOPCASHBACK_LINK', color: 'bg-red-600', offer: 'Get $15 Bonus' },
+  { name: 'Capital One', url: 'YOUR_CAPONE_LINK', color: 'bg-blue-800', offer: 'Get $80 Bonus' },
+  { name: 'RetailMeNot', url: 'YOUR_RETAILMENOT_LINK', color: 'bg-purple-800', offer: 'Cash Back' },
 ];
-
 
 interface Deal {
   id: string; title: string; price: number; originalPrice: number; 
@@ -78,18 +77,21 @@ function getTimeAgo(timestamp: number) {
 export default function Main() {
   const [user, setUser] = useState<User | null>(null);
   
-  // DATA STATES
   const [feedDeals, setFeedDeals] = useState<Deal[]>([]);
   const [glitchDealsDB, setGlitchDealsDB] = useState<Deal[]>([]);
+  
   const [loading, setLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  
   const [featuredVideo, setFeaturedVideo] = useState<{videoId: string, title: string} | null>(null);
 
-  // FILTERS
   const [activeCategory, setActiveCategory] = useState('All');
   const [activeStore, setActiveStore] = useState('All Stores');
   const [activeBrand, setActiveBrand] = useState('All Brands');
   const [activeDealType, setActiveDealType] = useState('All Types');
   const [searchQuery, setSearchQuery] = useState('');
+  
   const [minPrice, setMinPrice] = useState<number | ''>('');
   const [maxPrice, setMaxPrice] = useState<number | ''>('');
   const [showFilters, setShowFilters] = useState(false);
@@ -129,11 +131,30 @@ export default function Main() {
     }
   }, []);
 
-  // --- FETCH 1: REGULAR FEED ---
+  // --- FETCH 1: REGULAR FEED & SEARCH ---
   useEffect(() => {
-    setLoading(true);
-    let constraints: any[] = [orderBy('timestamp', 'desc'), limit(dealLimit)];
+    // 1. Determine constraints and limit based on Search status
+    let effectiveLimit = dealLimit;
+    const isSearchMode = searchQuery.trim().length > 0;
 
+    // IF SEARCHING: Fetch massive batch (500) to ensure deep search
+    if (isSearchMode) {
+        effectiveLimit = 500; 
+        if (!isSearching) setIsSearching(true);
+    } else {
+        setIsSearching(false);
+    }
+
+    // Handle Loading Spinners
+    if (effectiveLimit === 50 && !isSearchMode) {
+      setLoading(true); // Full screen load for initial
+    } else {
+      setIsLoadingMore(true); // Small spinner for load more / search
+    }
+
+    let constraints: any[] = [orderBy('timestamp', 'desc'), limit(effectiveLimit)];
+
+    // Note: Store/Category filters applied on server side when possible
     if (activeStore !== 'All Stores') {
         const storeCode = STORE_MAP[activeStore];
         constraints.push(where('store', '==', storeCode));
@@ -148,13 +169,17 @@ export default function Main() {
       const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Deal[];
       setFeedDeals(items);
       setLoading(false);
-    }, () => setLoading(false));
+      setIsLoadingMore(false);
+    }, () => {
+        setLoading(false);
+        setIsLoadingMore(false);
+    });
     return () => unsubscribe();
-  }, [user, dealLimit, activeStore, activeCategory]);
+  }, [user, dealLimit, activeStore, activeCategory, searchQuery]); // Re-run when searchQuery changes
 
   useEffect(() => {
-    setDealLimit(50);
-  }, [activeStore, activeCategory]);
+    if (searchQuery.trim() === '') setDealLimit(50);
+  }, [activeStore, activeCategory, searchQuery]);
 
   // --- FETCH 2: GLITCH FEED ---
   useEffect(() => {
@@ -209,20 +234,15 @@ export default function Main() {
   };
 
   // --- SEPARATE FILTER LOGIC ---
-  
-  // 1. GLITCHES: Force them to show regardless of search/filters
   const glitchDeals = glitchDealsDB;
 
-  // 2. REGULAR DEALS: Apply filters normally to the feed
   const regularDeals = feedDeals.filter(deal => {
-    // Don't show glitches again in the regular feed
     if (deal.dealType === 'Glitch') return false;
 
     const searchLower = searchQuery.toLowerCase();
     const matchesSearch = (deal.title?.toLowerCase() || '').includes(searchLower) || (deal.store?.toLowerCase() || '').includes(searchLower);
     if (!matchesSearch) return false;
 
-    // Note: Store & Category are primarily handled by server query, but we safety check here too
     if (activeStore !== 'All Stores' && deal.store?.toLowerCase() !== STORE_MAP[activeStore]) return false;
     if (activeCategory !== 'All' && deal.category !== activeCategory) return false;
 
@@ -331,7 +351,7 @@ export default function Main() {
         </aside>
 
         <div className="flex-1">
-          {/* GLITCH ZONE (Always Visible) */}
+          {/* GLITCH ZONE */}
           {glitchDeals.length > 0 && (
             <div className="mb-8">
               <div className="flex items-center gap-2 mb-4 bg-red-600 text-white p-3 rounded-lg shadow-md animate-pulse">
@@ -436,7 +456,19 @@ export default function Main() {
                   </div>
                 ))}
               </div>
-              <div className="flex justify-center pb-12"><button onClick={() => setDealLimit(prev => prev + 50)} className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-3 px-8 rounded-full shadow-sm transition-all">Load More Deals</button></div>
+              
+              {/* Load More Button - Only show if we aren't already searching heavily */}
+              {!isSearching && (
+                <div className="flex justify-center pb-12">
+                    <button 
+                    onClick={() => setDealLimit(prev => prev + 50)} 
+                    disabled={isLoadingMore}
+                    className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-3 px-8 rounded-full shadow-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                    {isLoadingMore ? <><Loader2 className="w-4 h-4 animate-spin" /> Loading...</> : 'Load More Deals'}
+                    </button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -444,9 +476,15 @@ export default function Main() {
 
       <footer className="bg-white border-t border-gray-200 mt-auto py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-4">
-          <p className="text-xs text-gray-500">ToolDealsDaily.com is a participant in the Amazon Services LLC Associates Program...</p>
-          <p className="text-xs text-gray-500">We also participate in affiliate programs with Home Depot, Acme Tools, Walmart, and others...</p>
-          <p className="text-xs text-gray-400">&copy; {new Date().getFullYear()} Tool Deals Daily. All rights reserved.</p>
+          <p className="text-xs text-gray-500">
+            ToolDealsDaily.com is a participant in the Amazon Services LLC Associates Program...
+          </p>
+          <p className="text-xs text-gray-500">
+            We also participate in affiliate programs with Home Depot, Acme Tools, Walmart, and others...
+          </p>
+          <p className="text-xs text-gray-400">
+            &copy; {new Date().getFullYear()} Tool Deals Daily. All rights reserved.
+          </p>
         </div>
       </footer>
     </div>
