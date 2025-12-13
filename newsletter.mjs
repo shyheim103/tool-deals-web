@@ -31,19 +31,29 @@ async function getBestDeals() {
 
   const glitches = glitchSnapshot.docs.map(doc => doc.data());
 
-  // 2. Get Top 3 Deepest Discounts
+  // 2. Get Top 3 Deepest Discounts (With Quality Control)
+  // Fetch more items (200) to ensure we have enough after filtering
   const saleSnapshot = await db.collection('deals')
     .orderBy('timestamp', 'desc')
-    .limit(100)
+    .limit(200) 
     .get();
 
   let sales = saleSnapshot.docs.map(doc => {
     const d = doc.data();
-    if (d.dealType === 'Glitch') return null; 
+    
+    // --- QUALITY CONTROL FILTERS ---
+    if (d.dealType === 'Glitch') return null; // Already shown in glitch section
+    if (d.store === 'walmart') return null;   // EXCLUDE WALMART (Fake discounts)
+    
     const discount = ((d.originalPrice - d.price) / d.originalPrice) * 100;
+    
+    // EXCLUDE AMAZON JUNK (If discount > 70%, it's likely a fake list price/knockoff)
+    if (d.store === 'amz' && discount > 70) return null;
+
     return { ...d, discount };
   }).filter(d => d !== null && d.discount > 0);
 
+  // Sort by highest discount and take top 3
   sales.sort((a, b) => b.discount - a.discount);
   const topSales = sales.slice(0, 3);
 
