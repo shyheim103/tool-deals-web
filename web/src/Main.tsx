@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAnalytics, logEvent } from 'firebase/analytics';
-import { getFirestore, collection, onSnapshot, query, doc, getDoc, addDoc, deleteDoc, limit, orderBy, where } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, query, doc, getDoc, addDoc, deleteDoc, limit, orderBy, where, setDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, User } from 'firebase/auth';
-import { Search, ExternalLink, Loader2, AlertCircle, Filter, X, DollarSign, Zap, Trash2, PlusCircle } from 'lucide-react';
+import { Search, ExternalLink, Loader2, AlertCircle, Filter, X, DollarSign, Zap, Trash2, PlusCircle, Mail, Send } from 'lucide-react';
 
 // --- CONFIGURATION ---
 const getFirebaseConfig = () => {
@@ -52,8 +52,8 @@ const STORE_COLORS: Record<string, string> = {
 // --- CASH BACK APPS ---
 const CASH_BACK_APPS = [
   { name: 'Rakuten', url: 'YOUR_RAKUTEN_LINK', color: 'bg-purple-600', offer: 'Get $50 Bonus' },
-  { name: 'TopCashback', url: 'YOUR_TOPCASHBACK_LINK', color: 'bg-red-600', offer: 'Get $15 Bonus' },
-  { name: 'Capital One', url: 'YOUR_CAPONE_LINK', color: 'bg-blue-800', offer: 'Get $80 Bonus' },
+  { name: 'TopCashback', url: 'YOUR_TOPCASHBACK_LINK', color: 'bg-red-600', offer: 'Get $40 Bonus' },
+  { name: 'Capital One', url: 'YOUR_CAPONE_LINK', color: 'bg-blue-800', offer: 'Get $60 Bonus' },
   { name: 'RetailMeNot', url: 'YOUR_RETAILMENOT_LINK', color: 'bg-purple-800', offer: 'Cash Back' },
 ];
 
@@ -85,6 +85,10 @@ export default function Main() {
   const [isSearching, setIsSearching] = useState(false);
   
   const [featuredVideo, setFeaturedVideo] = useState<{videoId: string, title: string} | null>(null);
+
+  // NEWSLETTER STATE
+  const [email, setEmail] = useState('');
+  const [subscribed, setSubscribed] = useState(false);
 
   const [activeCategory, setActiveCategory] = useState('All');
   const [activeStore, setActiveStore] = useState('All Stores');
@@ -133,11 +137,9 @@ export default function Main() {
 
   // --- FETCH 1: REGULAR FEED & SEARCH ---
   useEffect(() => {
-    // 1. Determine constraints and limit based on Search status
     let effectiveLimit = dealLimit;
     const isSearchMode = searchQuery.trim().length > 0;
 
-    // IF SEARCHING: Fetch massive batch (500) to ensure deep search
     if (isSearchMode) {
         effectiveLimit = 500; 
         if (!isSearching) setIsSearching(true);
@@ -145,16 +147,14 @@ export default function Main() {
         setIsSearching(false);
     }
 
-    // Handle Loading Spinners
     if (effectiveLimit === 50 && !isSearchMode) {
-      setLoading(true); // Full screen load for initial
+      setLoading(true);
     } else {
-      setIsLoadingMore(true); // Small spinner for load more / search
+      setIsLoadingMore(true);
     }
 
     let constraints: any[] = [orderBy('timestamp', 'desc'), limit(effectiveLimit)];
 
-    // Note: Store/Category filters applied on server side when possible
     if (activeStore !== 'All Stores') {
         const storeCode = STORE_MAP[activeStore];
         constraints.push(where('store', '==', storeCode));
@@ -175,7 +175,7 @@ export default function Main() {
         setIsLoadingMore(false);
     });
     return () => unsubscribe();
-  }, [user, dealLimit, activeStore, activeCategory, searchQuery]); // Re-run when searchQuery changes
+  }, [user, dealLimit, activeStore, activeCategory, searchQuery]);
 
   useEffect(() => {
     if (searchQuery.trim() === '') setDealLimit(50);
@@ -204,6 +204,21 @@ export default function Main() {
     };
     fetchVideo();
   }, []);
+
+  const handleSubscribe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !email.includes('@')) return alert("Please enter a valid email.");
+    try {
+      await setDoc(doc(db, 'subscribers', email), {
+        email: email,
+        joinedAt: Date.now()
+      });
+      setSubscribed(true);
+      setEmail('');
+      // Reset success message after 5s
+      setTimeout(() => setSubscribed(false), 5000);
+    } catch (err) { alert("Error subscribing. Try again."); }
+  };
 
   const handleAddDeal = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -288,6 +303,7 @@ export default function Main() {
       {isAdmin && (
         <div className="bg-slate-800 text-white p-6 border-b-4 border-yellow-500">
           <div className="max-w-7xl mx-auto">
+            {/* ... Admin inputs ... */}
             <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
               <Zap className="text-yellow-400" /> Admin Manager
             </h2>
@@ -371,7 +387,10 @@ export default function Main() {
                         <h3 className="font-bold text-gray-900 text-lg leading-tight group-hover:text-red-600 transition-colors">{deal.title}</h3>
                         <div className="flex items-center gap-2 mt-1">
                             <span className="bg-slate-900 text-white text-xs px-2 py-0.5 rounded font-bold uppercase">{deal.store}</span>
-                            <span className="text-sm text-gray-500">{getTimeAgo(deal.timestamp)}</span>
+                            {/* LIVE NOW BADGE - NO DATE */}
+                            <span className="flex items-center gap-1 bg-red-100 text-red-600 text-[10px] px-2 py-0.5 rounded font-bold uppercase animate-pulse">
+                               🔥 Live Now
+                            </span>
                         </div>
                         <div className="mt-2 font-bold text-red-600 flex items-center gap-1">Check Price <ExternalLink className="w-4 h-4" /></div>
                         </div>
@@ -381,6 +400,39 @@ export default function Main() {
               </div>
             </div>
           )}
+
+          {/* NEWSLETTER SIGNUP (NEW) */}
+          <div className="bg-slate-900 rounded-xl p-6 mb-8 text-center md:text-left flex flex-col md:flex-row items-center gap-6 shadow-xl border border-slate-700">
+             <div className="flex-1">
+                <h3 className="text-white font-bold text-xl flex items-center justify-center md:justify-start gap-2">
+                   <Mail className="text-yellow-400 w-6 h-6" /> 
+                   Get Glitch Alerts Instantly
+                </h3>
+                <p className="text-slate-400 text-sm mt-1">
+                   Don't miss the next price error. We'll email you the second a new glitch or fire sale drops.
+                </p>
+             </div>
+             <form onSubmit={handleSubscribe} className="w-full md:w-auto flex flex-col sm:flex-row gap-2">
+                {subscribed ? (
+                   <div className="bg-green-600 text-white px-6 py-2.5 rounded-lg font-bold flex items-center justify-center gap-2 w-full md:w-80">
+                      ✅ You're on the list!
+                   </div>
+                ) : (
+                   <>
+                     <input 
+                       type="email" 
+                       placeholder="Enter your email..." 
+                       className="px-4 py-2.5 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:border-yellow-400 w-full md:w-64"
+                       value={email}
+                       onChange={(e) => setEmail(e.target.value)}
+                     />
+                     <button type="submit" className="bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold px-6 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors">
+                        Subscribe <Send className="w-4 h-4" />
+                     </button>
+                   </>
+                )}
+             </form>
+          </div>
 
           {/* Video & Cash Back */}
           {featuredVideo && (
@@ -457,7 +509,6 @@ export default function Main() {
                 ))}
               </div>
               
-              {/* Load More Button - Only show if we aren't already searching heavily */}
               {!isSearching && (
                 <div className="flex justify-center pb-12">
                     <button 
