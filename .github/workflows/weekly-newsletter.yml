@@ -1,0 +1,31 @@
+name: Weekly Newsletter Bot
+
+on:
+  schedule:
+    # Runs at 9:00 AM UTC every Friday
+    - cron: '0 9 * * 5'
+  workflow_dispatch: # Allows manual trigger button
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Run Newsletter Script
+      env:
+        RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        # Reuse your existing secrets
+        GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      run: |
+        echo '${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}' > service-account.json
+        node newsletter.mjs
