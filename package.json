@@ -8,7 +8,7 @@
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
     "amazon-paapi": "^1.0.7",
-    "apify-client": "^2.20.0",
+    "apify-client": "^2.21.0",
     "axios": "^1.13.2",
     "cheerio": "^1.1.2",
     "dotenv": "^17.2.3",
