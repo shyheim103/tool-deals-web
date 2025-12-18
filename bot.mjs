@@ -5,19 +5,20 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 const amazon = require('amazon-paapi');
 const axios = require('axios');
-const { ApifyClient } = require('apify-client'); // Import Apify
+const { ApifyClient } = require('apify-client'); 
 
 const serviceAccount = require('./service-account.json');
 
 // --- CONFIGURATION ---
 const APP_ID = 'production'; 
 const MIN_DISCOUNT_PERCENT = 15; 
-const YOUTUBE_CHANNEL_ID = 'UCsHob-KhV7vfi-MyoXBMhDg'; 
+// const YOUTUBE_CHANNEL_ID = 'UCsHob-KhV7vfi-MyoXBMhDg'; // Not currently used
 
-// SECURE TOKEN LOAD (Matches your .env name)
+// SECURE TOKEN LOAD
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
 const apifyClient = new ApifyClient({ token: APIFY_TOKEN });
 
+// AMAZON CONFIG
 const amazonParams = {
   AccessKey: process.env.AMAZON_ACCESS_KEY, 
   SecretKey: process.env.AMAZON_SECRET_KEY,
@@ -26,6 +27,7 @@ const amazonParams = {
   Marketplace: 'www.amazon.com' 
 };
 
+// IMPACT CONFIG
 const IMPACT_CONFIG = {
   AccountSID: 'IRUYAEiFA6CW1885322jxLbyaj6NkCYkE1', 
   AuthToken: 'JvVxNnAHFDdHGyBnJP5wAy_jAj9K_pjZ',   
@@ -41,8 +43,8 @@ const IMPACT_CONFIG = {
 const SMART_KEYWORDS = [
   // THE BIG 3
   { term: 'DeWalt', stores: ['all'] },
-  { term: 'Milwaukee', stores: ['amz', 'hd', 'acme', 'ace'] },
-  { term: 'Makita', stores: ['amz', 'hd', 'acme', 'ace'] },
+  { term: 'Milwaukee', stores: ['all'] },
+  { term: 'Makita', stores: ['all'] },
   
   // PRO BRANDS
   { term: 'Flex 24V', stores: ['acme', 'lowes'] },
@@ -59,12 +61,12 @@ const SMART_KEYWORDS = [
   { term: 'Kaiweets', stores: ['amz'] },
   { term: 'Toolant', stores: ['amz'] },
 
-
   // OUTDOOR / OTHER
   { term: 'EGO', stores: ['amz', 'acme', 'ace', 'lowes'] },
   { term: 'Skil', stores: ['amz', 'acme', 'walmart', 'lowes'] }
 ];
 
+// FIREBASE INIT
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -76,33 +78,108 @@ function getDealsCollection() {
   return db.collection('deals');
 }
 
+// --- HELPER: SEND GLITCH ALERT (VIA BREVO) ---
+async function sendGlitchAlert(deal) {
+  if (!process.env.BREVO_API_KEY) {
+      console.log("⚠️ Skipping Email Alert: No BREVO_API_KEY found.");
+      return;
+  }
+
+  console.log(`📧 Sending Glitch Alert via Brevo for: ${deal.title}`);
+  
+  try {
+    // 1. Get all subscribers
+    const snapshot = await db.collection('subscribers').get();
+    if (snapshot.empty) {
+        console.log("   x No subscribers found.");
+        return;
+    }
+
+    // Brevo expects recipients in format: [{email: "a@b.com"}, {email: "c@d.com"}]
+    // We send to BCC to hide emails from each other
+    const recipients = snapshot.docs.map(doc => ({ email: doc.data().email || doc.id }));
+
+    // 2. Prepare Data
+    const data = {
+        sender: { name: "Tool Deals Glitch Bot", email: "dealfinder@tooldealsdaily.com" },
+        to: [{ email: "dealfinder@tooldealsdaily.com" }], // Main "To" (can be you)
+        bcc: recipients, // Everyone else in BCC
+        subject: `🔥 GLITCH DETECTED: ${deal.title}`,
+        htmlContent: `
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+          <h1 style="color: #dc2626;">🔥 GLITCH ALERT!</h1>
+          <p>The bot just found a potential price error or fire sale.</p>
+          
+          <div style="border: 2px solid #eab308; padding: 15px; border-radius: 8px; background: #fffbeb;">
+            <h2 style="margin-top: 0;">${deal.title}</h2>
+            <p style="font-size: 18px;">
+              <strong>Price:</strong> <span style="color: #dc2626;">$${deal.price}</span> 
+              <span style="text-decoration: line-through; color: #666;">($${deal.originalPrice})</span>
+            </p>
+            <a href="${deal.url}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 GRAB IT NOW</a>
+          </div>
+
+          <p style="margin-top: 20px; font-size: 12px; color: #888;">
+            *Act fast! Glitches can expire in minutes.<br>
+            <a href="https://tooldealsdaily.com">View all deals</a>
+          </p>
+        </div>`
+    };
+
+    // 3. Send via Brevo API
+    await axios.post('https://api.brevo.com/v3/smtp/email', data, {
+        headers: {
+            'accept': 'application/json',
+            'api-key': process.env.BREVO_API_KEY,
+            'content-type': 'application/json'
+        }
+    });
+
+    console.log(`✅ Brevo: Alert sent to ${recipients.length} subscribers.`);
+
+  } catch (err) {
+    console.error("❌ Brevo Email Error:", err.response?.data || err.message);
+  }
+}
+
+// --- HELPER: SMART SAVE ---
 async function saveSmartDeal(batch, docRef, data) {
   try {
     const docSnap = await docRef.get();
     
-    // Default status
+    // Default status to 'active' if not specified
     if (!data.status) data.status = 'active'; 
+
     data.lastSeen = Date.now();
 
     if (!docSnap.exists) {
       data.timestamp = Date.now();
       batch.set(docRef, data, { merge: true });
+
+      // *** TRIGGER GLITCH ALERT FOR NEW ITEMS ***
+      if (data.dealType === 'Glitch' || (data.title && data.title.toLowerCase().includes('glitch'))) {
+          // Send alert asynchronously (don't await, so bot keeps running)
+          sendGlitchAlert(data); 
+      }
+
     } else {
       const oldData = docSnap.data();
       const oldPrice = parseFloat(oldData.price) || 0;
       const newPrice = parseFloat(data.price) || 0;
 
-      // PROTECT CUSTOM IMAGES:
-      // If the incoming data has no image (e.g. from Google), but the DB already has one, keep the DB one.
-      if (!data.image && oldData.image) {
-          delete data.image; 
-      }
+      // Protect custom images/data from being overwritten by nulls
+      if (!data.image && oldData.image) delete data.image;
 
+      // Update if price changed
       if (Math.abs(newPrice - oldPrice) > 0.01) {
          data.timestamp = Date.now();
          batch.set(docRef, data, { merge: true });
+         
+         // Optional: Alert on significant price drops for existing items?
+         // For now, let's keep alerts only for NEW glitches to avoid spam.
+         
       } else {
-         delete data.timestamp; 
+         delete data.timestamp; // Don't bump timestamp if price is same
          batch.set(docRef, data, { merge: true });
       }
     }
@@ -117,6 +194,9 @@ function getDealType(title, description = '') {
   if (t.includes('buy one') || t.includes('get one') || t.includes('bogo')) return 'BOGO';
   if (t.includes('free tool') || t.includes('bonus tool')) return 'Free Gift';
   if (t.includes('combo') || t.includes('kit') || t.includes('bundle')) return 'Bundle';
+  // Note: We don't auto-tag 'Glitch' here to be safe. 
+  // You usually want to manually tag glitches via Admin, 
+  // OR add specific logic (e.g. > 70% off) if you trust the data.
   return 'Sale'; 
 }
 
@@ -229,7 +309,6 @@ async function fetchLowes() {
     .sort(() => 0.5 - Math.random()).slice(0, 3);
 
   for (const term of lowesKeywords) {
-    // FIX 1: Add "price" to the query to force Google to show it in the snippet
     const query = `${term} price site:lowes.com`;
     console.log(`   > Scanning: "${query}"`);
     
@@ -255,10 +334,8 @@ async function fetchLowes() {
               const url = result.url;
               if (!title || !url) continue;
 
-              // FIX 2: Better Price Detection Logic
+              // Price Detection Logic
               let priceString = null;
-              
-              // Strategy A: Rich Snippets (Best data)
               if (result.richSnippet?.attributes) {
                   for (const attr of result.richSnippet.attributes) {
                       if (attr.name && attr.name.toLowerCase().includes('price')) {
@@ -266,27 +343,18 @@ async function fetchLowes() {
                       }
                   }
               }
-              
-              // Strategy B: Regex the description (Fallback)
-              // Looks for "$99", "$ 99", "$99.00"
               if (!priceString && result.description) {
                   const match = result.description.match(/\$\s?[0-9,]+(?:\.[0-9]{2})?/);
                   if (match) priceString = match[0];
               }
-
-              // Strategy C: Look in the title (Last resort)
               if (!priceString && title) {
                   const match = title.match(/\$\s?[0-9,]+(?:\.[0-9]{2})?/);
                   if (match) priceString = match[0];
               }
 
-              if (!priceString) continue; // Still no price? Skip.
+              if (!priceString) continue;
 
-              // Parse Price
               const price = parseFloat(priceString.replace(/[^0-9.]/g, ''));
-              
-              // Estimate Original Price
-              // If the description says "Was $199", we can capture that for a real discount calculation.
               let originalPrice = price;
               if (result.description) {
                   const wasMatch = result.description.match(/(?:was|list|reg)\.?\s?\$?([0-9,]+)/i);
@@ -296,12 +364,6 @@ async function fetchLowes() {
                   }
               }
 
-              // Calculate Discount
-              const discount = ((originalPrice - price) / originalPrice) * 100;
-              
-              // Filter: Only save if we found a "Was" price discount OR if it matches our keywords perfectly
-              // Since Google Search is imprecise, we save almost everything found as a Draft for manual review
-              // UNLESS price is clearly too low (accessory)
               if (price < 10) continue; 
 
               const cleanId = (title.substring(0, 15) + price).replace(/[^a-zA-Z0-9]/g, ''); 
@@ -319,7 +381,6 @@ async function fetchLowes() {
                   hot: true, 
                   status: 'draft' 
               });
-              
               count++;
           }
       }
