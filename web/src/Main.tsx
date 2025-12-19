@@ -45,7 +45,6 @@ const STORE_COLORS: Record<string, string> = {
 const DEAL_TYPES = ['All Types', 'Glitch', 'BOGO', 'Free Gift', 'Bundle', 'Sale'];
 const BRANDS = ['All Brands', 'Bosch', 'Craftsman', 'DeWalt', 'EGO', 'Flex', 'Gearwrench', 'Greenworks', 'Hart', 'Husky', 'Hyper Tough', 'Klein', 'Kobalt', 'Makita', 'Metabo HPT', 'Milwaukee', 'Ridgid', 'Ryobi', 'Skil'];
 
-// --- RESTORED: CASH BACK APPS ---
 const CASH_BACK_APPS = [
   { name: 'Rakuten', url: 'https://www.rakuten.com/r/CHRISH3992?eeid=45830', color: 'bg-purple-600', offer: 'Get $50 Bonus' },
   { name: 'TopCashback', url: 'https://www.topcashback.com/ref/tool%20deals', color: 'bg-red-600', offer: 'Get $15 Bonus' },
@@ -65,7 +64,7 @@ interface Deal {
   store: string;
   hot: boolean;
   timestamp: number;
-  status?: string; // 'active', 'expired', 'draft'
+  status?: string; 
 }
 
 function getTimeAgo(timestamp: number) {
@@ -103,7 +102,7 @@ export default function Main() {
 
   // ADMIN STATE
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminTab, setAdminTab] = useState('post'); // 'post' or 'drafts'
+  const [adminTab, setAdminTab] = useState('post'); 
   
   // FORM STATE
   const [title, setTitle] = useState('');
@@ -112,7 +111,7 @@ export default function Main() {
   const [url, setUrl] = useState('');
   const [image, setImage] = useState('');
   const [category, setCategory] = useState('Power Tools');
-  const [dealType, setDealType] = useState('Sale'); 
+  const [dealType, setDealType] = useState('Sale'); // Default
   const [store, setStore] = useState('amz');
   const [sendEmail, setSendEmail] = useState(false);
 
@@ -143,7 +142,6 @@ export default function Main() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        // 1. Fetch Main Feed (Active)
         let effectiveLimit = dealLimit;
         if (searchQuery.trim().length > 0) effectiveLimit = 500;
         
@@ -155,15 +153,12 @@ export default function Main() {
         const snapshot = await getDocs(q);
         const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Deal[];
         
-        // Filter active vs draft in memory just in case
         setDeals(items.filter(d => d.status !== 'draft'));
 
-        // 2. Fetch Glitches (Always)
         const qGlitch = query(collection(db, 'deals'), where('dealType', '==', 'Glitch'), where('status', '==', 'active'), orderBy('timestamp', 'desc'), limit(20));
         const snapGlitch = await getDocs(qGlitch);
         setGlitchDeals(snapGlitch.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
 
-        // 3. Fetch Drafts (If Admin)
         if (isAdmin) {
             const qDrafts = query(collection(db, 'deals'), where('status', '==', 'draft'), orderBy('timestamp', 'desc'));
             const snapDrafts = await getDocs(qDrafts);
@@ -181,11 +176,10 @@ export default function Main() {
   // --- ACTIONS ---
 
   const sendManualEmail = async (dealData: Deal) => {
-    // ⚠️ PASTE YOUR BREVO KEY HERE ⚠️
     const API_KEY = process.env.REACT_APP_BREVO_API_KEY || ""; 
 
-    if (API_KEY.includes("YOUR-API-KEY")) {
-        alert("⚠️ Email NOT sent! Please add API Key in Main.tsx line 198");
+    if (!API_KEY) {
+        alert("⚠️ Email NOT sent! No API Key found in .env file.");
         return;
     }
 
@@ -231,17 +225,39 @@ export default function Main() {
 
   const handleAddDeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title || !price || !url) return;
+    
+    // VALIDATION LOGIC
+    if (!title || !price || !url) {
+        alert("Missing Fields! Please fill in Title, Price, and URL.");
+        return;
+    }
+
     const newDeal: any = {
-      title, price: parseFloat(price), originalPrice: parseFloat(originalPrice) || parseFloat(price),
-      url, image, category, dealType, store, hot: true, timestamp: Date.now(), status: 'active'
+      title, 
+      price: parseFloat(price), 
+      originalPrice: parseFloat(originalPrice) || parseFloat(price),
+      url, 
+      image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", // Default image if empty
+      category, 
+      dealType, 
+      store, 
+      hot: true, 
+      timestamp: Date.now(), 
+      status: 'active'
     };
+
     try {
       await addDoc(collection(db, 'deals'), newDeal);
       if (sendEmail) await sendManualEmail(newDeal);
+      
+      // Reset Form
       setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setSendEmail(false);
-      window.location.reload(); // Quick refresh
-    } catch (error) { console.error("Error adding deal: ", error); }
+      alert("Deal Posted Successfully!");
+      window.location.reload(); 
+    } catch (error) { 
+        console.error("Error adding deal: ", error);
+        alert("Error posting deal: " + error);
+    }
   };
 
   const handlePublishDraft = async (deal: Deal) => {
@@ -275,7 +291,6 @@ export default function Main() {
     } catch (err) {}
   };
 
-  // --- FILTERING LOGIC ---
   const filteredDeals = deals.filter(deal => {
     const searchLower = searchQuery.toLowerCase();
     const matchesSearch = (deal.title?.toLowerCase() || '').includes(searchLower) || (deal.store?.toLowerCase() || '').includes(searchLower);
@@ -312,7 +327,7 @@ export default function Main() {
         </div>
       </div>
 
-      {/* ADMIN PANEL */}
+      {/* ADMIN PANEL (REBUILT) */}
       {isAdmin && (
         <div className="bg-slate-800 text-white p-6 border-b-4 border-yellow-500">
           <div className="max-w-7xl mx-auto">
@@ -328,19 +343,59 @@ export default function Main() {
 
             {adminTab === 'post' ? (
               <form onSubmit={handleAddDeal} className="space-y-4 bg-slate-700 p-4 rounded-lg">
+                
+                {/* ROW 1: Title & URL */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <input className="p-2 rounded bg-slate-900 border border-slate-600" placeholder="Title" value={title} onChange={e => setTitle(e.target.value)} />
-                    <input className="p-2 rounded bg-slate-900 border border-slate-600" placeholder="Affiliate URL" value={url} onChange={e => setUrl(e.target.value)} />
-                    <input className="p-2 rounded bg-slate-900 border border-slate-600" type="number" placeholder="Price" value={price} onChange={e => setPrice(e.target.value)} />
-                    <input className="p-2 rounded bg-slate-900 border border-slate-600" type="number" placeholder="Orig Price" value={originalPrice} onChange={e => setOriginalPrice(e.target.value)} />
-                    <input className="p-2 rounded bg-slate-900 border border-slate-600" placeholder="Image URL" value={image} onChange={e => setImage(e.target.value)} />
-                    <select className="p-2 rounded bg-slate-900 border border-slate-600" value={store} onChange={e => setStore(e.target.value)}>{sortedAdminStores.map(([n, c]) => <option key={c} value={c}>{n}</option>)}</select>
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Deal Title (Required)</label>
+                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. DeWalt 20V Max Kit..." value={title} onChange={e => setTitle(e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Affiliate Link (Required)</label>
+                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://amazon.com/..." value={url} onChange={e => setUrl(e.target.value)} />
+                    </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    <input type="checkbox" checked={sendEmail} onChange={e => setSendEmail(e.target.checked)} className="w-5 h-5 text-yellow-500" />
-                    <label className="text-yellow-400 font-bold">SEND EMAIL BLAST? 🚀</label>
+
+                {/* ROW 2: Price, Orig Price, Image */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Sale Price</label>
+                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="e.g. 99.00" value={price} onChange={e => setPrice(e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Original Price</label>
+                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="e.g. 199.00" value={originalPrice} onChange={e => setOriginalPrice(e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Image URL (Optional)</label>
+                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://images.lowes..." value={image} onChange={e => setImage(e.target.value)} />
+                    </div>
                 </div>
-                <button type="submit" className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2 rounded">Post Deal</button>
+
+                {/* ROW 3: Store & Type & Email */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Store</label>
+                        <select className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" value={store} onChange={e => setStore(e.target.value)}>
+                            {sortedAdminStores.map(([n, c]) => <option key={c} value={c}>{n}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-xs text-slate-400 mb-1">Deal Type</label>
+                        <select className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" value={dealType} onChange={e => setDealType(e.target.value)}>
+                            <option value="Sale">🏷️ Regular Sale</option>
+                            <option value="Glitch">🔥 Glitch / Error</option>
+                            <option value="BOGO">🎁 BOGO / Free Gift</option>
+                            <option value="Clearance">📉 Clearance</option>
+                        </select>
+                    </div>
+                    <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-600 h-[42px]">
+                        <input type="checkbox" id="emailChk" checked={sendEmail} onChange={e => setSendEmail(e.target.checked)} className="w-5 h-5 text-yellow-500 rounded cursor-pointer" />
+                        <label htmlFor="emailChk" className="text-yellow-400 font-bold text-sm cursor-pointer select-none">SEND EMAIL? 🚀</label>
+                    </div>
+                </div>
+
+                <button type="submit" className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded text-lg shadow-lg hover:shadow-xl transition-all">POST DEAL</button>
               </form>
             ) : (
                <div className="bg-slate-700 p-4 rounded-lg grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[500px] overflow-y-auto">
@@ -442,7 +497,7 @@ export default function Main() {
             </div>
           )}
 
-          {/* --- RESTORED: CASH BACK APPS SECTION --- */}
+          {/* CASH BACK APPS */}
           <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-8">
             <div className="flex items-center gap-2 mb-3">
                 <DollarSign className="w-5 h-5 text-yellow-600" />
