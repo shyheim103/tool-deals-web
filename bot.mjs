@@ -12,6 +12,7 @@ const serviceAccount = require('./service-account.json');
 // --- CONFIGURATION ---
 const APP_ID = 'production'; 
 const MIN_DISCOUNT_PERCENT = 15; 
+const HIGH_DISCOUNT_ALERT_THRESHOLD = 50; // Alert if > 50% off
 
 // SECURE TOKEN LOAD
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
@@ -94,20 +95,18 @@ async function sendGlitchAlert(deal) {
         return;
     }
 
-    // Brevo expects recipients in format: [{email: "a@b.com"}, {email: "c@d.com"}]
-    // We send to BCC to hide emails from each other
     const recipients = snapshot.docs.map(doc => ({ email: doc.data().email || doc.id }));
 
     // 2. Prepare Data
     const data = {
-        sender: { name: "Tool Deals Glitch Bot", email: "dealfinder@tooldealsdaily.com" },
-        to: [{ email: "dealfinder@tooldealsdaily.com" }], // Main "To" (can be you)
-        bcc: recipients, // Everyone else in BCC
-        subject: `🔥 GLITCH DETECTED: ${deal.title}`,
+        sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
+        to: [{ email: "dealfinder@tooldealsdaily.com" }], 
+        bcc: recipients, 
+        subject: `🔥 ALERT: ${deal.title}`,
         htmlContent: `
         <div style="font-family: Arial, sans-serif; padding: 20px;">
-          <h1 style="color: #dc2626;">🔥 GLITCH ALERT!</h1>
-          <p>The bot just found a potential price error or fire sale.</p>
+          <h1 style="color: #dc2626;">🔥 PRICE ALERT!</h1>
+          <p>The bot found a massive discount.</p>
           
           <div style="border: 2px solid #eab308; padding: 15px; border-radius: 8px; background: #fffbeb;">
             <h2 style="margin-top: 0;">${deal.title}</h2>
@@ -119,7 +118,6 @@ async function sendGlitchAlert(deal) {
           </div>
 
           <p style="margin-top: 20px; font-size: 12px; color: #888;">
-            *Act fast! Glitches can expire in minutes.<br>
             <a href="https://tooldealsdaily.com">View all deals</a>
           </p>
         </div>`
@@ -151,13 +149,21 @@ async function saveSmartDeal(batch, docRef, data) {
 
     data.lastSeen = Date.now();
 
+    // Check discount percentage
+    const discount = data.originalPrice > 0 
+        ? ((data.originalPrice - data.price) / data.originalPrice) * 100 
+        : 0;
+
     if (!docSnap.exists) {
       data.timestamp = Date.now();
       batch.set(docRef, data, { merge: true });
 
-      // *** TRIGGER GLITCH ALERT FOR NEW ITEMS ***
-      if (data.dealType === 'Glitch' || (data.title && data.title.toLowerCase().includes('glitch'))) {
-          // Send alert asynchronously (don't await, so bot keeps running)
+      // *** TRIGGER ALERT LOGIC ***
+      // Alert if it's explicitly a "Glitch" OR if discount is HUGE (e.g. > 50%)
+      if (data.dealType === 'Glitch' || 
+          (data.title && data.title.toLowerCase().includes('glitch')) || 
+          discount > HIGH_DISCOUNT_ALERT_THRESHOLD) {
+          
           sendGlitchAlert(data); 
       }
 
@@ -232,28 +238,22 @@ async function fetchAmazon() {
                   if (!item.Offers?.Listings[0]?.Price) continue;
                   
                   const price = parseFloat(item.Offers.Listings[0].Price.Amount);
-                  // Approximate original price since Amazon API often hides ListPrice
                   const originalPrice = price * 1.2; 
                   const title = item.ItemInfo.Title.DisplayValue;
                   const discount = ((originalPrice - price) / originalPrice) * 100;
 
-                  // --- UPDATED EXPIRATION LOGIC ---
+                  // --- EXPIRATION LOGIC ---
                   if (discount < MIN_DISCOUNT_PERCENT) {
-                      // Check if we need to expire this deal
                       const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
                       const doc = await docRef.get();
                       if (doc.exists && doc.data().status === 'active') {
-                           console.log(`📉 Expiring Amazon Deal (Price went up): ${title}`);
-                           batch.update(docRef, { 
-                               status: 'expired', 
-                               price: price,
-                               lastSeen: Date.now()
-                           });
+                           console.log(`📉 Expiring Amazon Deal: ${title}`);
+                           batch.update(docRef, { status: 'expired', price: price, lastSeen: Date.now() });
                            count++;
                       }
-                      continue; // Skip saving as active deal
+                      continue; 
                   }
-                  // --------------------------------
+                  // ------------------------
 
                   const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
                   await saveSmartDeal(batch, docRef, {
@@ -266,13 +266,12 @@ async function fetchAmazon() {
                 }
             }
         } catch (innerErr) {
-            // Ignore individual keyword errors to keep loop running
             console.log(`   x Amazon error for "${k.term}": ${innerErr.message}`);
         }
         await new Promise(r => setTimeout(r, 1500));
       }
       if (count > 0) await batch.commit();
-      console.log(`✅ Amazon: Processed ${count} updates/expirations.`);
+      console.log(`✅ Amazon: Processed ${count} items.`);
   } catch (e) { console.error("Amazon Error:", e.message); }
 }
 
@@ -302,22 +301,18 @@ async function fetchImpact() {
               let originalPrice = parseFloat(item.OriginalPrice) || price;
               const discount = ((originalPrice - price) / originalPrice) * 100;
 
-              // --- UPDATED EXPIRATION LOGIC ---
+              // --- EXPIRATION LOGIC ---
               if (discount < MIN_DISCOUNT_PERCENT) {
                   const docRef = getDealsCollection().doc(`imp-${item.Id}`);
                   const doc = await docRef.get();
                   if (doc.exists && doc.data().status === 'active') {
-                       console.log(`📉 Expiring ${storeCode} Deal (Price went up): ${item.Name}`);
-                       batch.update(docRef, { 
-                           status: 'expired', 
-                           price: price,
-                           lastSeen: Date.now()
-                       });
+                       console.log(`📉 Expiring ${storeCode} Deal: ${item.Name}`);
+                       batch.update(docRef, { status: 'expired', price: price, lastSeen: Date.now() });
                        count++;
                   }
                   continue;
               }
-              // --------------------------------
+              // ------------------------
 
               const docRef = getDealsCollection().doc(`imp-${item.Id}`);
               await saveSmartDeal(batch, docRef, {
@@ -331,14 +326,14 @@ async function fetchImpact() {
         await new Promise(r => setTimeout(r, 500));
     }
     if (count > 0) await batch.commit();
-    console.log(`✅ Impact: Processed ${count} updates/expirations.`);
+    console.log(`✅ Impact: Processed ${count} items.`);
   } catch (e) { console.error("Impact Error:", e.message); }
 }
 
 // 3. LOWE'S (Via Google Search "Backdoor") -> DRAFTS
 async function fetchLowes() {
   if (!APIFY_TOKEN) { 
-      console.log('⚠️ Skipping Lowe\'s (No APIFY_TOKEN in .env)'); 
+      console.log('⚠️ Skipping Lowe\'s (No APIFY_TOKEN)'); 
       return; 
   }
   console.log('🔵 Fetching Lowe\'s deals via Google Search...');
@@ -357,7 +352,6 @@ async function fetchLowes() {
     let count = 0;
 
     try {
-      // Run the Official Google Search Scraper
       const run = await apifyClient.actor('apify/google-search-scraper').call({
           queries: query,       
           resultsPerPage: 20,   
@@ -429,8 +423,6 @@ async function fetchLowes() {
       if (count > 0) {
           await batch.commit();
           console.log(`     ✅ Saved ${count} drafts for "${term}"`);
-      } else {
-          console.log(`     x No price data found for "${term}"`);
       }
 
     } catch (error) { 
