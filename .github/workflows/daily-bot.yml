@@ -1,0 +1,36 @@
+name: Daily Deal Bot
+
+on:
+  schedule:
+    # Runs at 14:00 UTC (which is 8:00 AM CST)
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allows you to run it manually from GitHub website
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        
+    - name: Install Dependencies
+      run: npm install
+      
+    - name: Create Secrets File
+      run: |
+        echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
+        
+    - name: Run Bot
+      run: node bot.mjs
+      env:
+        APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+        AMAZON_ACCESS_KEY: ${{ secrets.AMAZON_ACCESS_KEY }}
+        AMAZON_SECRET_KEY: ${{ secrets.AMAZON_SECRET_KEY }}
+        AMAZON_PARTNER_TAG: ${{ secrets.AMAZON_PARTNER_TAG }}
+        # Add any other secrets here

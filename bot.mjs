@@ -12,7 +12,6 @@ const serviceAccount = require('./service-account.json');
 // --- CONFIGURATION ---
 const APP_ID = 'production'; 
 const MIN_DISCOUNT_PERCENT = 15; 
-// const YOUTUBE_CHANNEL_ID = 'UCsHob-KhV7vfi-MyoXBMhDg'; // Not currently used
 
 // SECURE TOKEN LOAD
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
@@ -172,11 +171,13 @@ async function saveSmartDeal(batch, docRef, data) {
 
       // Update if price changed
       if (Math.abs(newPrice - oldPrice) > 0.01) {
-         data.timestamp = Date.now();
-         batch.set(docRef, data, { merge: true });
+         // Check if deal is reactivating (was expired, now active)
+         if (oldData.status === 'expired') {
+             data.status = 'active';
+             data.timestamp = Date.now(); // Bump to top
+         }
          
-         // Optional: Alert on significant price drops for existing items?
-         // For now, let's keep alerts only for NEW glitches to avoid spam.
+         batch.set(docRef, data, { merge: true });
          
       } else {
          delete data.timestamp; // Don't bump timestamp if price is same
@@ -194,9 +195,6 @@ function getDealType(title, description = '') {
   if (t.includes('buy one') || t.includes('get one') || t.includes('bogo')) return 'BOGO';
   if (t.includes('free tool') || t.includes('bonus tool')) return 'Free Gift';
   if (t.includes('combo') || t.includes('kit') || t.includes('bundle')) return 'Bundle';
-  // Note: We don't auto-tag 'Glitch' here to be safe. 
-  // You usually want to manually tag glitches via Admin, 
-  // OR add specific logic (e.g. > 70% off) if you trust the data.
   return 'Sale'; 
 }
 
@@ -222,37 +220,63 @@ async function fetchAmazon() {
   try {
       for (const k of SMART_KEYWORDS) {
         if (!k.stores.includes('all') && !k.stores.includes('amz')) continue;
-        const data = await amazon.SearchItems(amazonParams, {
-            Keywords: k.term, SearchIndex: 'All', ItemCount: 10,
-            Resources: ['Images.Primary.Large', 'ItemInfo.Title', 'Offers.Listings.Price', 'Offers.Listings.Availability.Type']
-        });
-        if (data.SearchResult?.Items) {
-            for (const item of data.SearchResult.Items) {
-              if (!item.Offers?.Listings[0]?.Price) continue;
-              const price = parseFloat(item.Offers.Listings[0].Price.Amount);
-              const originalPrice = price * 1.2; 
-              const title = item.ItemInfo.Title.DisplayValue;
-              const discount = ((originalPrice - price) / originalPrice) * 100;
-              if (discount < MIN_DISCOUNT_PERCENT) continue;
+        
+        try {
+            const data = await amazon.SearchItems(amazonParams, {
+                Keywords: k.term, SearchIndex: 'All', ItemCount: 10,
+                Resources: ['Images.Primary.Large', 'ItemInfo.Title', 'Offers.Listings.Price', 'Offers.Listings.Availability.Type']
+            });
 
-              const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
-              await saveSmartDeal(batch, docRef, {
-                title: title, price: price, originalPrice: originalPrice, store: 'amz',
-                category: categorizeItem(title), dealType: getDealType(title),
-                url: item.DetailPageURL, image: item.Images.Primary.Large.URL,
-                hot: true, status: 'active' 
-              });
-              count++;
+            if (data.SearchResult?.Items) {
+                for (const item of data.SearchResult.Items) {
+                  if (!item.Offers?.Listings[0]?.Price) continue;
+                  
+                  const price = parseFloat(item.Offers.Listings[0].Price.Amount);
+                  // Approximate original price since Amazon API often hides ListPrice
+                  const originalPrice = price * 1.2; 
+                  const title = item.ItemInfo.Title.DisplayValue;
+                  const discount = ((originalPrice - price) / originalPrice) * 100;
+
+                  // --- UPDATED EXPIRATION LOGIC ---
+                  if (discount < MIN_DISCOUNT_PERCENT) {
+                      // Check if we need to expire this deal
+                      const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
+                      const doc = await docRef.get();
+                      if (doc.exists && doc.data().status === 'active') {
+                           console.log(`📉 Expiring Amazon Deal (Price went up): ${title}`);
+                           batch.update(docRef, { 
+                               status: 'expired', 
+                               price: price,
+                               lastSeen: Date.now()
+                           });
+                           count++;
+                      }
+                      continue; // Skip saving as active deal
+                  }
+                  // --------------------------------
+
+                  const docRef = getDealsCollection().doc(`amz-${item.ASIN}`);
+                  await saveSmartDeal(batch, docRef, {
+                    title: title, price: price, originalPrice: originalPrice, store: 'amz',
+                    category: categorizeItem(title), dealType: getDealType(title),
+                    url: item.DetailPageURL, image: item.Images.Primary.Large.URL,
+                    hot: true, status: 'active' 
+                  });
+                  count++;
+                }
             }
+        } catch (innerErr) {
+            // Ignore individual keyword errors to keep loop running
+            console.log(`   x Amazon error for "${k.term}": ${innerErr.message}`);
         }
         await new Promise(r => setTimeout(r, 1500));
       }
       if (count > 0) await batch.commit();
-      console.log(`✅ Amazon: Updated ${count} deals.`);
+      console.log(`✅ Amazon: Processed ${count} updates/expirations.`);
   } catch (e) { console.error("Amazon Error:", e.message); }
 }
 
-// 2. IMPACT (Home Depot, Acme, Ace)
+// 2. IMPACT (Home Depot, Acme, Ace, Walmart)
 async function fetchImpact() {
   console.log('🌍 Fetching Impact...');
   const batch = db.batch();
@@ -276,7 +300,24 @@ async function fetchImpact() {
 
               const price = parseFloat(item.CurrentPrice);
               let originalPrice = parseFloat(item.OriginalPrice) || price;
-              if (((originalPrice - price) / originalPrice) * 100 < MIN_DISCOUNT_PERCENT) continue;
+              const discount = ((originalPrice - price) / originalPrice) * 100;
+
+              // --- UPDATED EXPIRATION LOGIC ---
+              if (discount < MIN_DISCOUNT_PERCENT) {
+                  const docRef = getDealsCollection().doc(`imp-${item.Id}`);
+                  const doc = await docRef.get();
+                  if (doc.exists && doc.data().status === 'active') {
+                       console.log(`📉 Expiring ${storeCode} Deal (Price went up): ${item.Name}`);
+                       batch.update(docRef, { 
+                           status: 'expired', 
+                           price: price,
+                           lastSeen: Date.now()
+                       });
+                       count++;
+                  }
+                  continue;
+              }
+              // --------------------------------
 
               const docRef = getDealsCollection().doc(`imp-${item.Id}`);
               await saveSmartDeal(batch, docRef, {
@@ -290,7 +331,7 @@ async function fetchImpact() {
         await new Promise(r => setTimeout(r, 500));
     }
     if (count > 0) await batch.commit();
-    console.log(`✅ Impact: Updated ${count} deals.`);
+    console.log(`✅ Impact: Processed ${count} updates/expirations.`);
   } catch (e) { console.error("Impact Error:", e.message); }
 }
 
