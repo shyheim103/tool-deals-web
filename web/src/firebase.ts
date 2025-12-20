@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth'; // <--- NEW IMPORT
 
-// Your configuration from the old file
 const firebaseConfig = {
   apiKey: "AIzaSyD2439CzuRoCareQ0vPi0VXoXxqpUpPyfE",
   authDomain: "tool-deals.firebaseapp.com",
@@ -12,8 +12,6 @@ const firebaseConfig = {
   measurementId: "G-7D7K3F2PPW"
 };
 
-// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-
-// Export the database so Main.tsx can use it
 export const db = getFirestore(app);
+export const auth = getAuth(app); // <--- EXPORT AUTH

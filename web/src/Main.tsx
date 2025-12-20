@@ -1,34 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, 
-  getDocs, 
-  addDoc, 
-  deleteDoc, 
-  doc, 
-  updateDoc, 
-  query, 
-  orderBy, 
-  limit,
-  setDoc,
-  where,
-  getDoc
+  collection, getDocs, addDoc, deleteDoc, doc, updateDoc, 
+  query, orderBy, limit, setDoc, where, getDoc 
 } from 'firebase/firestore';
-import { db } from './firebase'; 
+import { signInAnonymously } from 'firebase/auth'; 
+import { db, auth } from './firebase'; 
 import { 
-  Search, 
-  ExternalLink, 
-  Loader2, 
-  AlertCircle, 
-  Filter, 
-  X, 
-  DollarSign, 
-  Zap, 
-  Trash2, 
-  PlusCircle, 
-  Mail, 
-  Send, 
-  Edit,
-  Clock // Added Clock icon for Daily Deals
+  Search, ExternalLink, Loader2, AlertCircle, Filter, X, 
+  DollarSign, Zap, Trash2, Mail, Send, Edit, Clock, ShoppingCart, MinusCircle 
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
@@ -43,7 +22,6 @@ const STORE_COLORS: Record<string, string> = {
   'lowes': 'bg-[#004990]', 'northern': 'bg-blue-800'
 };
 
-// ADDED "Daily Deal" HERE
 const DEAL_TYPES = ['All Types', 'Glitch', 'Daily Deal', 'BOGO', 'Free Gift', 'Bundle', 'Sale'];
 const BRANDS = ['All Brands', 'Bosch', 'Craftsman', 'DeWalt', 'EGO', 'Flex', 'Gearwrench', 'Greenworks', 'Hart', 'Husky', 'Hyper Tough', 'Klein', 'Kobalt', 'Makita', 'Metabo HPT', 'Milwaukee', 'Ridgid', 'Ryobi', 'Skil'];
 
@@ -55,18 +33,9 @@ const CASH_BACK_APPS = [
 ];
 
 interface Deal {
-  id?: string;
-  title: string;
-  price: number;
-  originalPrice: number;
-  url: string;
-  image: string;
-  category: string;
-  dealType: string;
-  store: string;
-  hot: boolean;
-  timestamp: number;
-  status?: string; 
+  id?: string; title: string; price: number; originalPrice: number;
+  url: string; image: string; category: string; dealType: string;
+  store: string; hot: boolean; timestamp: number; status?: string; 
 }
 
 function getTimeAgo(timestamp: number) {
@@ -115,7 +84,10 @@ export default function Main() {
   const [category, setCategory] = useState('Power Tools');
   const [dealType, setDealType] = useState('Sale'); 
   const [store, setStore] = useState('amz');
-  const [sendEmail, setSendEmail] = useState(false);
+  const [addToBatch, setAddToBatch] = useState(false); // Changed from sendEmail to addToBatch
+
+  // EMAIL BATCH STATE
+  const [emailBatch, setEmailBatch] = useState<Deal[]>([]);
 
   // DRAFT EDITING
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
@@ -124,6 +96,11 @@ export default function Main() {
   const [draftPrice, setDraftPrice] = useState('');
   const [draftOriginalPrice, setDraftOriginalPrice] = useState('');
 
+  // --- AUTO LOGIN ---
+  useEffect(() => {
+    signInAnonymously(auth).catch((error) => console.error("Auth Error:", error));
+  }, []);
+
   // --- INIT ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -131,12 +108,12 @@ export default function Main() {
     fetchVideo();
   }, []);
 
-  // --- AUTO-CHECK EMAIL FOR URGENT DEALS ---
+  // --- AUTO-CHECK BATCH FOR URGENT DEALS ---
   useEffect(() => {
     if (dealType === 'Glitch' || dealType === 'Daily Deal') {
-        setSendEmail(true);
+        setAddToBatch(true);
     } else {
-        setSendEmail(false);
+        setAddToBatch(false);
     }
   }, [dealType]);
 
@@ -166,7 +143,6 @@ export default function Main() {
         
         setDeals(items.filter(d => d.status !== 'draft'));
 
-        // Include "Daily Deal" in the high priority list if you want, or just keep glitches separate
         const qGlitch = query(collection(db, 'deals'), where('dealType', '==', 'Glitch'), where('status', '==', 'active'), orderBy('timestamp', 'desc'), limit(20));
         const snapGlitch = await getDocs(qGlitch);
         setGlitchDeals(snapGlitch.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
@@ -177,40 +153,40 @@ export default function Main() {
             setDraftDeals(snapDrafts.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
         }
 
-      } catch (error) {
-        console.error("Error fetching deals:", error);
-      }
+      } catch (error) { console.error("Error fetching deals:", error); }
       setLoading(false);
     };
     fetchData();
   }, [dealLimit, activeStore, activeCategory, searchQuery, isAdmin]);
 
-  // --- ACTIONS ---
-
-  const sendManualEmail = async (dealData: Deal) => {
+  // --- NEW: SEND BATCH EMAIL ---
+  const sendBatchEmail = async () => {
+    if (emailBatch.length === 0) return alert("Batch is empty!");
     const API_KEY = process.env.REACT_APP_BREVO_API_KEY || ""; 
-
-    if (!API_KEY) {
-        alert("⚠️ Email NOT sent! No API Key found in .env file.");
-        return;
-    }
+    if (!API_KEY) return alert("No API Key found!");
 
     try {
         const snapshot = await getDocs(collection(db, 'subscribers'));
         const recipients = snapshot.docs.map(doc => ({ email: doc.data().email || doc.id }));
-        if (recipients.length === 0) return alert("No subscribers found!");
+        if (recipients.length === 0) return alert("No subscribers!");
 
-        // --- UPDATED SUBJECT LINE LOGIC ---
-        let subjectLine = `🔥 HOT DEAL: ${dealData.title}`;
-        let headerColor = "#ca8a04"; // Yellow/Gold
-        
-        if (dealData.dealType === 'Glitch') {
-            subjectLine = `🔥 GLITCH DETECTED: ${dealData.title}`;
-            headerColor = "#dc2626"; // Red
-        } else if (dealData.dealType === 'Daily Deal') {
-            subjectLine = `⏳ DAILY DEAL (24H): ${dealData.title}`;
-            headerColor = "#0284c7"; // Blue
-        }
+        // 1. Create Smart Subject
+        const firstTitle = emailBatch[0].title.split(' ').slice(0, 4).join(' ');
+        const countText = emailBatch.length > 1 ? ` + ${emailBatch.length - 1} more deals` : '';
+        const subjectLine = `🔥 Daily Roundup: ${firstTitle}...${countText}`;
+
+        // 2. Generate HTML List
+        const itemsHtml = emailBatch.map(item => `
+            <div style="border-bottom: 1px solid #eee; padding: 15px 0;">
+                <h3 style="margin: 0 0 5px 0;">${item.title}</h3>
+                <p style="margin: 0 0 10px 0;">
+                    <strong style="color: #dc2626; font-size: 16px;">$${item.price}</strong> 
+                    <span style="text-decoration: line-through; color: #888;">$${item.originalPrice}</span>
+                    <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px;">${item.store}</span>
+                </p>
+                <a href="${item.url}" style="background-color: #ca8a04; color: black; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px;">View Deal</a>
+            </div>
+        `).join('');
 
         const emailBody = {
             sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
@@ -218,17 +194,17 @@ export default function Main() {
             bcc: recipients,
             subject: subjectLine,
             htmlContent: `
-            <div style="font-family: Arial, sans-serif; padding: 20px;">
-              <h1 style="color: ${headerColor};">${subjectLine.split(':')[0]}</h1>
-              <p>New limited-time deal posted:</p>
-              <div style="border: 2px solid ${headerColor}; padding: 15px; border-radius: 8px; background: #fffbeb;">
-                <h2 style="margin-top: 0;">${dealData.title}</h2>
-                <p style="font-size: 18px;">
-                  <strong>Price:</strong> <span style="color: #dc2626;">$${dealData.price}</span> 
-                  <span style="text-decoration: line-through; color: #666;">($${dealData.originalPrice})</span>
-                </p>
-                <a href="${dealData.url}" style="background-color: ${headerColor}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+            <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
+              <h1 style="color: #ca8a04; text-align: center;">🔥 Daily Deal Roundup</h1>
+              <p style="text-align: center; color: #666;">Here are the best deals, glitches, and drops happening right now.</p>
+              
+              <div style="border: 2px solid #ca8a04; padding: 20px; border-radius: 8px; background: #fff;">
+                ${itemsHtml}
               </div>
+              
+              <p style="text-align: center; margin-top: 30px; font-size: 12px; color: #888;">
+                 <a href="https://tooldealsdaily.com">View all deals on website</a>
+              </p>
             </div>`
         };
 
@@ -237,40 +213,39 @@ export default function Main() {
             headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
             body: JSON.stringify(emailBody)
         });
-        alert(`✅ Email Blast Sent to ${recipients.length} people!`);
-    } catch (e: any) {
-        alert("❌ Error sending email: " + e.message);
-    }
+
+        alert(`✅ Roundup Sent! (${emailBatch.length} deals to ${recipients.length} people)`);
+        setEmailBatch([]); // Clear batch after sending
+    } catch (e: any) { alert("❌ Error sending email: " + e.message); }
   };
 
   const handleAddDeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title || !price || !url) {
-        alert("Missing Fields! Please fill in Title, Price, and URL.");
-        return;
-    }
-
+    if (!title || !price || !url) { alert("Missing Fields!"); return; }
     const newDeal: any = {
-      title, 
-      price: parseFloat(price), 
-      originalPrice: parseFloat(originalPrice) || parseFloat(price),
-      url, 
-      image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", 
-      category, 
-      dealType, 
-      store, 
-      hot: true, 
-      timestamp: Date.now(), 
-      status: 'active'
+      title, price: parseFloat(price), originalPrice: parseFloat(originalPrice) || parseFloat(price),
+      url, image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", 
+      category, dealType, store, hot: true, timestamp: Date.now(), status: 'active'
     };
-
     try {
-      await addDoc(collection(db, 'deals'), newDeal);
-      if (sendEmail) await sendManualEmail(newDeal);
+      // 1. Save to Database (Live Site)
+      const docRef = await addDoc(collection(db, 'deals'), newDeal);
       
-      setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setSendEmail(false);
-      alert("Deal Posted Successfully!");
-      window.location.reload(); 
+      // 2. Add to Email Batch (Local State)
+      if (addToBatch) {
+          setEmailBatch(prev => [...prev, { ...newDeal, id: docRef.id }]);
+      }
+      
+      setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setAddToBatch(false);
+      
+      // Don't reload window if batching, otherwise we lose the batch!
+      if (!addToBatch) {
+        window.location.reload();
+      } else {
+        alert("Deal Posted & Added to Batch! 🛒");
+        // Re-fetch manually since we didn't reload
+        // (Optional: Implement fetch logic here or just let user rely on batch UI)
+      }
     } catch (error) { 
         console.error("Error adding deal: ", error);
         alert("Error posting deal: " + error);
@@ -285,8 +260,7 @@ export default function Main() {
             image: draftImage || deal.image,
             price: draftPrice ? parseFloat(draftPrice) : deal.price,
             originalPrice: draftOriginalPrice ? parseFloat(draftOriginalPrice) : deal.originalPrice,
-            status: 'active',
-            timestamp: Date.now()
+            status: 'active', timestamp: Date.now()
         });
         setEditingDraftId(null); setDraftAffiliateLink(''); setDraftImage(''); setDraftPrice(''); setDraftOriginalPrice('');
         window.location.reload();
@@ -329,7 +303,6 @@ export default function Main() {
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col">
-      {/* HEADER */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -344,7 +317,6 @@ export default function Main() {
         </div>
       </div>
 
-      {/* ADMIN PANEL */}
       {isAdmin && (
         <div className="bg-slate-800 text-white p-6 border-b-4 border-yellow-500">
           <div className="max-w-7xl mx-auto">
@@ -358,31 +330,36 @@ export default function Main() {
                 </div>
             </div>
 
+            {/* --- NEW: EMAIL BATCH CART --- */}
+            {emailBatch.length > 0 && (
+                <div className="bg-yellow-500/20 border border-yellow-500 rounded-lg p-4 mb-6">
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="font-bold text-yellow-400 flex items-center gap-2"><ShoppingCart /> Ready to Blast ({emailBatch.length})</h3>
+                        <button onClick={sendBatchEmail} className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded flex items-center gap-2">
+                            <Send className="w-4 h-4" /> Send Batch Email
+                        </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {emailBatch.map((item, idx) => (
+                            <div key={idx} className="bg-slate-900 border border-slate-600 rounded px-3 py-1 flex items-center gap-2 text-xs">
+                                <span className="text-white truncate max-w-[150px]">{item.title}</span>
+                                <button onClick={() => setEmailBatch(prev => prev.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-200"><MinusCircle className="w-4 h-4" /></button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {adminTab === 'post' ? (
               <form onSubmit={handleAddDeal} className="space-y-4 bg-slate-700 p-4 rounded-lg">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Deal Title (Required)</label>
-                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. DeWalt 20V Max Kit..." value={title} onChange={e => setTitle(e.target.value)} />
-                    </div>
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Affiliate Link (Required)</label>
-                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://amazon.com/..." value={url} onChange={e => setUrl(e.target.value)} />
-                    </div>
+                    <div><label className="block text-xs text-slate-400 mb-1">Deal Title</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="Title..." value={title} onChange={e => setTitle(e.target.value)} /></div>
+                    <div><label className="block text-xs text-slate-400 mb-1">Affiliate Link</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="URL..." value={url} onChange={e => setUrl(e.target.value)} /></div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Sale Price</label>
-                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="e.g. 99.00" value={price} onChange={e => setPrice(e.target.value)} />
-                    </div>
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Original Price</label>
-                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="e.g. 199.00" value={originalPrice} onChange={e => setOriginalPrice(e.target.value)} />
-                    </div>
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Image URL (Optional)</label>
-                        <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://images.lowes..." value={image} onChange={e => setImage(e.target.value)} />
-                    </div>
+                    <div><label className="block text-xs text-slate-400 mb-1">Sale Price</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="99.00" value={price} onChange={e => setPrice(e.target.value)} /></div>
+                    <div><label className="block text-xs text-slate-400 mb-1">Original Price</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" type="number" placeholder="199.00" value={originalPrice} onChange={e => setOriginalPrice(e.target.value)} /></div>
+                    <div><label className="block text-xs text-slate-400 mb-1">Image URL</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="Image..." value={image} onChange={e => setImage(e.target.value)} /></div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                     <div>
@@ -402,8 +379,8 @@ export default function Main() {
                         </select>
                     </div>
                     <div className="flex items-center gap-2 bg-slate-900 p-2 rounded border border-slate-600 h-[42px]">
-                        <input type="checkbox" id="emailChk" checked={sendEmail} onChange={e => setSendEmail(e.target.checked)} className="w-5 h-5 text-yellow-500 rounded cursor-pointer" />
-                        <label htmlFor="emailChk" className="text-yellow-400 font-bold text-sm cursor-pointer select-none">SEND EMAIL? 🚀</label>
+                        <input type="checkbox" id="emailChk" checked={addToBatch} onChange={e => setAddToBatch(e.target.checked)} className="w-5 h-5 text-yellow-500 rounded cursor-pointer" />
+                        <label htmlFor="emailChk" className="text-yellow-400 font-bold text-sm cursor-pointer select-none">Add to Email Batch? 🛒</label>
                     </div>
                 </div>
 
