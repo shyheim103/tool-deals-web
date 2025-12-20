@@ -27,7 +27,8 @@ import {
   PlusCircle, 
   Mail, 
   Send, 
-  Edit 
+  Edit,
+  Clock // Added Clock icon for Daily Deals
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
@@ -42,7 +43,8 @@ const STORE_COLORS: Record<string, string> = {
   'lowes': 'bg-[#004990]', 'northern': 'bg-blue-800'
 };
 
-const DEAL_TYPES = ['All Types', 'Glitch', 'BOGO', 'Free Gift', 'Bundle', 'Sale'];
+// ADDED "Daily Deal" HERE
+const DEAL_TYPES = ['All Types', 'Glitch', 'Daily Deal', 'BOGO', 'Free Gift', 'Bundle', 'Sale'];
 const BRANDS = ['All Brands', 'Bosch', 'Craftsman', 'DeWalt', 'EGO', 'Flex', 'Gearwrench', 'Greenworks', 'Hart', 'Husky', 'Hyper Tough', 'Klein', 'Kobalt', 'Makita', 'Metabo HPT', 'Milwaukee', 'Ridgid', 'Ryobi', 'Skil'];
 
 const CASH_BACK_APPS = [
@@ -111,7 +113,7 @@ export default function Main() {
   const [url, setUrl] = useState('');
   const [image, setImage] = useState('');
   const [category, setCategory] = useState('Power Tools');
-  const [dealType, setDealType] = useState('Sale'); // Default
+  const [dealType, setDealType] = useState('Sale'); 
   const [store, setStore] = useState('amz');
   const [sendEmail, setSendEmail] = useState(false);
 
@@ -128,6 +130,15 @@ export default function Main() {
     if (params.get('admin') === 'true') setIsAdmin(true);
     fetchVideo();
   }, []);
+
+  // --- AUTO-CHECK EMAIL FOR URGENT DEALS ---
+  useEffect(() => {
+    if (dealType === 'Glitch' || dealType === 'Daily Deal') {
+        setSendEmail(true);
+    } else {
+        setSendEmail(false);
+    }
+  }, [dealType]);
 
   const fetchVideo = async () => {
     try {
@@ -155,6 +166,7 @@ export default function Main() {
         
         setDeals(items.filter(d => d.status !== 'draft'));
 
+        // Include "Daily Deal" in the high priority list if you want, or just keep glitches separate
         const qGlitch = query(collection(db, 'deals'), where('dealType', '==', 'Glitch'), where('status', '==', 'active'), orderBy('timestamp', 'desc'), limit(20));
         const snapGlitch = await getDocs(qGlitch);
         setGlitchDeals(snapGlitch.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
@@ -188,9 +200,17 @@ export default function Main() {
         const recipients = snapshot.docs.map(doc => ({ email: doc.data().email || doc.id }));
         if (recipients.length === 0) return alert("No subscribers found!");
 
-        const subjectLine = dealData.dealType === 'Glitch' 
-            ? `🔥 GLITCH DETECTED: ${dealData.title}`
-            : `🔥 HOT DEAL: ${dealData.title}`;
+        // --- UPDATED SUBJECT LINE LOGIC ---
+        let subjectLine = `🔥 HOT DEAL: ${dealData.title}`;
+        let headerColor = "#ca8a04"; // Yellow/Gold
+        
+        if (dealData.dealType === 'Glitch') {
+            subjectLine = `🔥 GLITCH DETECTED: ${dealData.title}`;
+            headerColor = "#dc2626"; // Red
+        } else if (dealData.dealType === 'Daily Deal') {
+            subjectLine = `⏳ DAILY DEAL (24H): ${dealData.title}`;
+            headerColor = "#0284c7"; // Blue
+        }
 
         const emailBody = {
             sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
@@ -199,15 +219,15 @@ export default function Main() {
             subject: subjectLine,
             htmlContent: `
             <div style="font-family: Arial, sans-serif; padding: 20px;">
-              <h1 style="color: #ca8a04;">🔥 DEAL ALERT!</h1>
-              <p>New hot deal posted:</p>
-              <div style="border: 2px solid #ca8a04; padding: 15px; border-radius: 8px; background: #fffbeb;">
+              <h1 style="color: ${headerColor};">${subjectLine.split(':')[0]}</h1>
+              <p>New limited-time deal posted:</p>
+              <div style="border: 2px solid ${headerColor}; padding: 15px; border-radius: 8px; background: #fffbeb;">
                 <h2 style="margin-top: 0;">${dealData.title}</h2>
                 <p style="font-size: 18px;">
                   <strong>Price:</strong> <span style="color: #dc2626;">$${dealData.price}</span> 
                   <span style="text-decoration: line-through; color: #666;">($${dealData.originalPrice})</span>
                 </p>
-                <a href="${dealData.url}" style="background-color: #ca8a04; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+                <a href="${dealData.url}" style="background-color: ${headerColor}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
               </div>
             </div>`
         };
@@ -225,8 +245,6 @@ export default function Main() {
 
   const handleAddDeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // VALIDATION LOGIC
     if (!title || !price || !url) {
         alert("Missing Fields! Please fill in Title, Price, and URL.");
         return;
@@ -237,7 +255,7 @@ export default function Main() {
       price: parseFloat(price), 
       originalPrice: parseFloat(originalPrice) || parseFloat(price),
       url, 
-      image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", // Default image if empty
+      image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", 
       category, 
       dealType, 
       store, 
@@ -250,7 +268,6 @@ export default function Main() {
       await addDoc(collection(db, 'deals'), newDeal);
       if (sendEmail) await sendManualEmail(newDeal);
       
-      // Reset Form
       setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setSendEmail(false);
       alert("Deal Posted Successfully!");
       window.location.reload(); 
@@ -327,7 +344,7 @@ export default function Main() {
         </div>
       </div>
 
-      {/* ADMIN PANEL (REBUILT) */}
+      {/* ADMIN PANEL */}
       {isAdmin && (
         <div className="bg-slate-800 text-white p-6 border-b-4 border-yellow-500">
           <div className="max-w-7xl mx-auto">
@@ -343,8 +360,6 @@ export default function Main() {
 
             {adminTab === 'post' ? (
               <form onSubmit={handleAddDeal} className="space-y-4 bg-slate-700 p-4 rounded-lg">
-                
-                {/* ROW 1: Title & URL */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <label className="block text-xs text-slate-400 mb-1">Deal Title (Required)</label>
@@ -355,8 +370,6 @@ export default function Main() {
                         <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://amazon.com/..." value={url} onChange={e => setUrl(e.target.value)} />
                     </div>
                 </div>
-
-                {/* ROW 2: Price, Orig Price, Image */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                         <label className="block text-xs text-slate-400 mb-1">Sale Price</label>
@@ -371,8 +384,6 @@ export default function Main() {
                         <input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="e.g. https://images.lowes..." value={image} onChange={e => setImage(e.target.value)} />
                     </div>
                 </div>
-
-                {/* ROW 3: Store & Type & Email */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                     <div>
                         <label className="block text-xs text-slate-400 mb-1">Store</label>
@@ -384,6 +395,7 @@ export default function Main() {
                         <label className="block text-xs text-slate-400 mb-1">Deal Type</label>
                         <select className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" value={dealType} onChange={e => setDealType(e.target.value)}>
                             <option value="Sale">🏷️ Regular Sale</option>
+                            <option value="Daily Deal">🚨 Daily Deal (24h)</option>
                             <option value="Glitch">🔥 Glitch / Error</option>
                             <option value="BOGO">🎁 BOGO / Free Gift</option>
                             <option value="Clearance">📉 Clearance</option>
@@ -538,7 +550,7 @@ export default function Main() {
                     <div className="relative h-48 p-4 flex items-center justify-center bg-white border-b border-gray-100">
                       <span className={`absolute top-3 left-3 z-10 ${STORE_COLORS[deal.store] || 'bg-gray-600'} text-white text-[10px] font-bold px-2 py-1 rounded uppercase shadow-sm`}>{deal.store}</span>
                       <span className="absolute top-3 right-3 z-10 bg-white/90 backdrop-blur-sm text-gray-500 text-[10px] font-bold px-2 py-1 rounded shadow-sm border border-gray-100 flex items-center gap-1">🕒 {getTimeAgo(deal.timestamp)}</span>
-                      {deal.dealType && deal.dealType !== 'Sale' && <span className="absolute bottom-3 left-3 z-10 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">{deal.dealType}</span>}
+                      {deal.dealType && deal.dealType !== 'Sale' && <span className={`absolute bottom-3 left-3 z-10 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm ${deal.dealType === 'Daily Deal' ? 'bg-blue-600' : 'bg-red-600'}`}>{deal.dealType}</span>}
                       {isAdmin && <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="absolute bottom-2 right-2 bg-slate-800 text-white p-2 rounded hover:bg-red-600 z-50"><Trash2 className="w-4 h-4" /></button>}
                       <img src={deal.image} alt={deal.title} className="max-h-full max-w-full object-contain group-hover:scale-105 transition-transform duration-300" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400?text=No+Image'}} />
                     </div>
