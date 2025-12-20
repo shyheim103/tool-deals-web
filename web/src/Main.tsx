@@ -7,7 +7,7 @@ import { signInAnonymously } from 'firebase/auth';
 import { db, auth } from './firebase'; 
 import { 
   Search, ExternalLink, Loader2, AlertCircle, Filter, X, 
-  DollarSign, Zap, Trash2, Mail, Send, Edit, Clock, ShoppingCart, MinusCircle 
+  DollarSign, Zap, Trash2, Mail, Send, Edit, Clock, ShoppingCart, MinusCircle, UserCheck 
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
@@ -84,7 +84,10 @@ export default function Main() {
   const [category, setCategory] = useState('Power Tools');
   const [dealType, setDealType] = useState('Sale'); 
   const [store, setStore] = useState('amz');
-  const [addToBatch, setAddToBatch] = useState(false); // Changed from sendEmail to addToBatch
+  const [addToBatch, setAddToBatch] = useState(false); 
+  
+  // NEW: TEST EMAIL STATE
+  const [testEmailAddress, setTestEmailAddress] = useState('dealfinder@tooldealsdaily.com');
 
   // EMAIL BATCH STATE
   const [emailBatch, setEmailBatch] = useState<Deal[]>([]);
@@ -159,96 +162,192 @@ export default function Main() {
     fetchData();
   }, [dealLimit, activeStore, activeCategory, searchQuery, isAdmin]);
 
-  // --- NEW: SEND BATCH EMAIL ---
-  const sendBatchEmail = async () => {
-    if (emailBatch.length === 0) return alert("Batch is empty!");
-    const API_KEY = process.env.REACT_APP_BREVO_API_KEY || ""; 
-    if (!API_KEY) return alert("No API Key found!");
+  // --- HELPER: CONSTRUCT EMAIL BODY ---
+  const getEmailPayload = (recipients: any[], subject: string, html: string) => {
+      return {
+          sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
+          to: [{ email: "dealfinder@tooldealsdaily.com" }], 
+          bcc: recipients, 
+          subject: subject,
+          htmlContent: html
+      };
+  };
+
+  // --- ACTION: SEND TEST PREVIEW (Current Form Data) ---
+  const sendTestPreview = async () => {
+    if (!testEmailAddress) return alert("Please enter a test email address!");
+    const API_KEY = process.env.REACT_APP_BREVO_API_KEY || "";
+    if (!API_KEY) return alert("❌ API KEY MISSING! Check .env file.");
 
     try {
-        const snapshot = await getDocs(collection(db, 'subscribers'));
-        const recipients = snapshot.docs.map(doc => ({ email: doc.data().email || doc.id }));
-        if (recipients.length === 0) return alert("No subscribers!");
+        const dealData = { title, price: parseFloat(price) || 0, originalPrice: parseFloat(originalPrice) || 0, url, store };
+        
+        const subjectLine = `[TEST] ${dealType}: ${title}`;
+        const html = `
+            <div style="font-family: Arial, sans-serif; padding: 20px;">
+              <h1 style="color: #ca8a04;">🧪 TEST EMAIL PREVIEW</h1>
+              <div style="border: 2px solid #ca8a04; padding: 15px; border-radius: 8px; background: #fffbeb;">
+                <h2 style="margin-top: 0;">${dealData.title}</h2>
+                <p style="font-size: 18px;">
+                  <strong>Price:</strong> <span style="color: #dc2626;">$${dealData.price}</span> 
+                  <span style="text-decoration: line-through; color: #666;">($${dealData.originalPrice})</span>
+                </p>
+                <p>Store: ${dealData.store}</p>
+                <a href="${dealData.url}" style="background-color: #ca8a04; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+              </div>
+            </div>`;
 
-        // 1. Create Smart Subject
+        const body = getEmailPayload([{ email: testEmailAddress }], subjectLine, html);
+
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.message || "Brevo Rejected Request");
+        }
+        alert(`✅ Test Email Sent to ${testEmailAddress}`);
+    } catch (e: any) { alert("❌ TEST FAILED: " + e.message); }
+  };
+
+  // --- ACTION: SEND BATCH EMAIL ---
+  const sendBatchEmail = async () => {
+    if (emailBatch.length === 0) return alert("Batch is empty!");
+    if (!window.confirm("Are you sure you want to blast this batch to ALL subscribers?")) return;
+    
+    const API_KEY = process.env.REACT_APP_BREVO_API_KEY || ""; 
+    try {
+        const snapshot = await getDocs(collection(db, 'subscribers'));
+        
+        // --- SANITIZATION LOGIC ---
+        const recipients = snapshot.docs
+            .map(doc => {
+                const data = doc.data();
+                const rawEmail = data.email || doc.id;
+                // Only return valid email objects
+                if (rawEmail && typeof rawEmail === 'string' && rawEmail.includes('@') && rawEmail.includes('.')) {
+                    return { email: rawEmail.trim() };
+                }
+                return null;
+            })
+            .filter(r => r !== null);
+
+        if (recipients.length === 0) return alert("No VALID subscribers found!");
+
         const firstTitle = emailBatch[0].title.split(' ').slice(0, 4).join(' ');
         const countText = emailBatch.length > 1 ? ` + ${emailBatch.length - 1} more deals` : '';
         const subjectLine = `🔥 Daily Roundup: ${firstTitle}...${countText}`;
 
-        // 2. Generate HTML List
         const itemsHtml = emailBatch.map(item => `
             <div style="border-bottom: 1px solid #eee; padding: 15px 0;">
                 <h3 style="margin: 0 0 5px 0;">${item.title}</h3>
                 <p style="margin: 0 0 10px 0;">
                     <strong style="color: #dc2626; font-size: 16px;">$${item.price}</strong> 
                     <span style="text-decoration: line-through; color: #888;">$${item.originalPrice}</span>
-                    <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px;">${item.store}</span>
                 </p>
                 <a href="${item.url}" style="background-color: #ca8a04; color: black; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px;">View Deal</a>
             </div>
         `).join('');
 
-        const emailBody = {
-            sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
-            to: [{ email: "dealfinder@tooldealsdaily.com" }],
-            bcc: recipients,
-            subject: subjectLine,
-            htmlContent: `
+        const html = `
             <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
               <h1 style="color: #ca8a04; text-align: center;">🔥 Daily Deal Roundup</h1>
-              <p style="text-align: center; color: #666;">Here are the best deals, glitches, and drops happening right now.</p>
-              
-              <div style="border: 2px solid #ca8a04; padding: 20px; border-radius: 8px; background: #fff;">
-                ${itemsHtml}
-              </div>
-              
-              <p style="text-align: center; margin-top: 30px; font-size: 12px; color: #888;">
-                 <a href="https://tooldealsdaily.com">View all deals on website</a>
-              </p>
-            </div>`
-        };
+              <div style="border: 2px solid #ca8a04; padding: 20px; border-radius: 8px; background: #fff;">${itemsHtml}</div>
+            </div>`;
 
-        await fetch('https://api.brevo.com/v3/smtp/email', {
+        const body = getEmailPayload(recipients, subjectLine, html);
+
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
-            body: JSON.stringify(emailBody)
+            body: JSON.stringify(body)
         });
 
-        alert(`✅ Roundup Sent! (${emailBatch.length} deals to ${recipients.length} people)`);
-        setEmailBatch([]); // Clear batch after sending
-    } catch (e: any) { alert("❌ Error sending email: " + e.message); }
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.message);
+        }
+
+        alert(`✅ Roundup Sent to ${recipients.length} subscribers!`);
+        setEmailBatch([]); 
+    } catch (e: any) { alert("❌ BATCH FAILED: " + e.message); }
   };
 
-  const handleAddDeal = async (e: React.FormEvent) => {
+  // --- ACTION: HANDLE POST DEAL (With Option to Blast Immediately) ---
+  const handlePostDeal = async (e: React.FormEvent, shouldBlast: boolean) => {
     e.preventDefault();
-    if (!title || !price || !url) { alert("Missing Fields!"); return; }
+    if (!title || !price || !url) return alert("Missing Fields!");
+    if (shouldBlast && !window.confirm("WARNING: You are about to email ALL subscribers about this single deal. Proceed?")) return;
+
     const newDeal: any = {
       title, price: parseFloat(price), originalPrice: parseFloat(originalPrice) || parseFloat(price),
       url, image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", 
       category, dealType, store, hot: true, timestamp: Date.now(), status: 'active'
     };
+
     try {
-      // 1. Save to Database (Live Site)
       const docRef = await addDoc(collection(db, 'deals'), newDeal);
       
-      // 2. Add to Email Batch (Local State)
       if (addToBatch) {
           setEmailBatch(prev => [...prev, { ...newDeal, id: docRef.id }]);
+          alert("Deal Posted & Added to Batch! 🛒");
+          setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setAddToBatch(false);
+          return;
       }
-      
-      setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setAddToBatch(false);
-      
-      // Don't reload window if batching, otherwise we lose the batch!
-      if (!addToBatch) {
-        window.location.reload();
+
+      if (shouldBlast) {
+          const snapshot = await getDocs(collection(db, 'subscribers'));
+          // --- SANITIZATION LOGIC ---
+          const recipients = snapshot.docs
+            .map(doc => {
+                const data = doc.data();
+                const rawEmail = data.email || doc.id;
+                if (rawEmail && typeof rawEmail === 'string' && rawEmail.includes('@') && rawEmail.includes('.')) {
+                    return { email: rawEmail.trim() };
+                }
+                return null;
+            })
+            .filter(r => r !== null);
+
+          if (recipients.length === 0) {
+              alert("Deal Posted, but NO EMAILS SENT (No valid subscribers found).");
+              window.location.reload();
+              return;
+          }
+          
+          const subjectLine = `🔥 HOT DEAL: ${newDeal.title}`;
+          const html = `
+            <div style="font-family: Arial, sans-serif; padding: 20px;">
+              <h1 style="color: #dc2626;">🔥 HOT DEAL ALERT</h1>
+              <div style="border: 2px solid #dc2626; padding: 15px; border-radius: 8px; background: #fffbeb;">
+                <h2 style="margin-top: 0;">${newDeal.title}</h2>
+                <p style="font-size: 18px;">
+                  <strong>Price:</strong> <span style="color: #dc2626;">$${newDeal.price}</span> 
+                  <span style="text-decoration: line-through; color: #666;">($${newDeal.originalPrice})</span>
+                </p>
+                <a href="${newDeal.url}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+              </div>
+            </div>`;
+          
+          const API_KEY = process.env.REACT_APP_BREVO_API_KEY || "";
+          const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+             method: 'POST',
+             headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
+             body: JSON.stringify(getEmailPayload(recipients, subjectLine, html))
+          });
+          
+          if (!response.ok) throw new Error("Brevo Error");
+          alert(`✅ Deal Posted & Emailed to ${recipients.length} people!`);
       } else {
-        alert("Deal Posted & Added to Batch! 🛒");
-        // Re-fetch manually since we didn't reload
-        // (Optional: Implement fetch logic here or just let user rely on batch UI)
+          alert("✅ Deal Posted!");
       }
-    } catch (error) { 
-        console.error("Error adding deal: ", error);
-        alert("Error posting deal: " + error);
+
+      window.location.reload(); 
+    } catch (error: any) { 
+        alert("Error: " + error.message);
     }
   };
 
@@ -330,14 +429,30 @@ export default function Main() {
                 </div>
             </div>
 
-            {/* --- NEW: EMAIL BATCH CART --- */}
+            {/* --- TEST EMAIL INPUT --- */}
+            <div className="bg-slate-900 border border-slate-600 p-3 rounded mb-4 flex items-center gap-3">
+                <UserCheck className="text-slate-400" />
+                <label className="text-slate-400 text-xs">Test Email:</label>
+                <input 
+                    value={testEmailAddress} 
+                    onChange={e => setTestEmailAddress(e.target.value)} 
+                    className="bg-slate-800 text-white px-2 py-1 rounded border border-slate-600 text-sm flex-1"
+                />
+            </div>
+
+            {/* --- EMAIL BATCH CART --- */}
             {emailBatch.length > 0 && (
                 <div className="bg-yellow-500/20 border border-yellow-500 rounded-lg p-4 mb-6">
                     <div className="flex items-center justify-between mb-3">
                         <h3 className="font-bold text-yellow-400 flex items-center gap-2"><ShoppingCart /> Ready to Blast ({emailBatch.length})</h3>
-                        <button onClick={sendBatchEmail} className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded flex items-center gap-2">
-                            <Send className="w-4 h-4" /> Send Batch Email
-                        </button>
+                        <div className="flex gap-2">
+                            <button onClick={() => sendTestPreview()} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-2 rounded flex items-center gap-2">
+                                🧪 Send Test to Me
+                            </button>
+                            <button onClick={() => sendBatchEmail()} className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded flex items-center gap-2">
+                                <Send className="w-4 h-4" /> Send to ALL 🚀
+                            </button>
+                        </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
                         {emailBatch.map((item, idx) => (
@@ -351,7 +466,7 @@ export default function Main() {
             )}
 
             {adminTab === 'post' ? (
-              <form onSubmit={handleAddDeal} className="space-y-4 bg-slate-700 p-4 rounded-lg">
+              <form onSubmit={e => handlePostDeal(e, false)} className="space-y-4 bg-slate-700 p-4 rounded-lg">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div><label className="block text-xs text-slate-400 mb-1">Deal Title</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="Title..." value={title} onChange={e => setTitle(e.target.value)} /></div>
                     <div><label className="block text-xs text-slate-400 mb-1">Affiliate Link</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="URL..." value={url} onChange={e => setUrl(e.target.value)} /></div>
@@ -384,7 +499,33 @@ export default function Main() {
                     </div>
                 </div>
 
-                <button type="submit" className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded text-lg shadow-lg hover:shadow-xl transition-all">POST DEAL</button>
+                {/* --- NEW BUTTON ROW --- */}
+                <div className="flex gap-2 pt-2">
+                    <button 
+                        type="button" 
+                        onClick={() => sendTestPreview()} 
+                        className="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2"
+                    >
+                        🧪 Send Test Preview
+                    </button>
+
+                    <button 
+                        type="submit" 
+                        className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded text-lg flex-[2] shadow-lg hover:shadow-xl transition-all"
+                    >
+                        POST DEAL
+                    </button>
+
+                    {!addToBatch && (
+                         <button 
+                            type="button" 
+                            onClick={(e) => handlePostDeal(e, true)} 
+                            className="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all"
+                         >
+                            🔥 Post & Blast to ALL
+                         </button>
+                    )}
+                </div>
               </form>
             ) : (
                <div className="bg-slate-700 p-4 rounded-lg grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[500px] overflow-y-auto">
@@ -444,7 +585,7 @@ export default function Main() {
                     <div className="absolute top-0 right-0 bg-red-600 text-white text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-wider">Glitch</div>
                     {isAdmin && <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="absolute bottom-2 right-2 bg-slate-800 text-white p-2 rounded hover:bg-red-600 z-50"><Trash2 className="w-4 h-4" /></button>}
                     <a href={deal.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 w-full">
-                        <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/600x400/red/white?text=GLITCH+DEAL&font=roboto'}} />
+                        <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400?text=No+Image'}} />
                         <div>
                         <h3 className="font-bold text-gray-900 text-lg leading-tight group-hover:text-red-600 transition-colors">{deal.title}</h3>
                         <div className="flex items-center gap-2 mt-1">
