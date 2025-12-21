@@ -180,20 +180,23 @@ export default function Main() {
     if (!API_KEY) return alert("❌ API KEY MISSING! Check .env file.");
 
     try {
-        const dealData = { title, price: parseFloat(price) || 0, originalPrice: parseFloat(originalPrice) || 0, url, store };
+        const dealData = { title, price: parseFloat(price) || 0, originalPrice: parseFloat(originalPrice) || 0, url, store, image };
         
         const subjectLine = `[TEST] ${dealType}: ${title}`;
         const html = `
             <div style="font-family: Arial, sans-serif; padding: 20px;">
               <h1 style="color: #ca8a04;">🧪 TEST EMAIL PREVIEW</h1>
-              <div style="border: 2px solid #ca8a04; padding: 15px; border-radius: 8px; background: #fffbeb;">
-                <h2 style="margin-top: 0;">${dealData.title}</h2>
-                <p style="font-size: 18px;">
+              <div style="border: 2px solid #ca8a04; padding: 15px; border-radius: 8px; background: #fffbeb; text-align: center;">
+                ${dealData.image ? `<img src="${dealData.image}" style="max-width: 100%; max-height: 250px; margin-bottom: 15px; object-fit: contain;" />` : ''}
+                <h2 style="margin-top: 0; text-align: left;">${dealData.title}</h2>
+                <p style="font-size: 18px; text-align: left;">
                   <strong>Price:</strong> <span style="color: #dc2626;">$${dealData.price}</span> 
                   <span style="text-decoration: line-through; color: #666;">($${dealData.originalPrice})</span>
                 </p>
-                <p>Store: ${dealData.store}</p>
-                <a href="${dealData.url}" style="background-color: #ca8a04; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+                <p style="text-align: left;">Store: ${dealData.store}</p>
+                <div style="text-align: left; margin-top: 15px;">
+                    <a href="${dealData.url}" style="background-color: #ca8a04; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+                </div>
               </div>
             </div>`;
 
@@ -227,7 +230,6 @@ export default function Main() {
             .map(doc => {
                 const data = doc.data();
                 const rawEmail = data.email || doc.id;
-                // Only return valid email objects
                 if (rawEmail && typeof rawEmail === 'string' && rawEmail.includes('@') && rawEmail.includes('.')) {
                     return { email: rawEmail.trim() };
                 }
@@ -242,13 +244,17 @@ export default function Main() {
         const subjectLine = `🔥 Daily Roundup: ${firstTitle}...${countText}`;
 
         const itemsHtml = emailBatch.map(item => `
-            <div style="border-bottom: 1px solid #eee; padding: 15px 0;">
-                <h3 style="margin: 0 0 5px 0;">${item.title}</h3>
-                <p style="margin: 0 0 10px 0;">
-                    <strong style="color: #dc2626; font-size: 16px;">$${item.price}</strong> 
-                    <span style="text-decoration: line-through; color: #888;">$${item.originalPrice}</span>
-                </p>
-                <a href="${item.url}" style="background-color: #ca8a04; color: black; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px;">View Deal</a>
+            <div style="border-bottom: 1px solid #eee; padding: 15px 0; display: flex; flex-direction: column; align-items: center;">
+                ${item.image ? `<img src="${item.image}" style="max-width: 100%; max-height: 180px; margin-bottom: 15px; object-fit: contain;" />` : ''}
+                <div style="width: 100%; text-align: left;">
+                    <h3 style="margin: 0 0 5px 0;">${item.title}</h3>
+                    <p style="margin: 0 0 10px 0;">
+                        <strong style="color: #dc2626; font-size: 16px;">$${item.price}</strong> 
+                        <span style="text-decoration: line-through; color: #888;">$${item.originalPrice}</span>
+                        <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px;">${item.store}</span>
+                    </p>
+                    <a href="${item.url}" style="background-color: #ca8a04; color: black; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px; display: inline-block;">View Deal</a>
+                </div>
             </div>
         `).join('');
 
@@ -256,6 +262,9 @@ export default function Main() {
             <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
               <h1 style="color: #ca8a04; text-align: center;">🔥 Daily Deal Roundup</h1>
               <div style="border: 2px solid #ca8a04; padding: 20px; border-radius: 8px; background: #fff;">${itemsHtml}</div>
+              <p style="text-align: center; margin-top: 30px; font-size: 12px; color: #888;">
+                 <a href="https://tooldealsdaily.com">View all deals on website</a>
+              </p>
             </div>`;
 
         const body = getEmailPayload(recipients, subjectLine, html);
@@ -322,13 +331,16 @@ export default function Main() {
           const html = `
             <div style="font-family: Arial, sans-serif; padding: 20px;">
               <h1 style="color: #dc2626;">🔥 HOT DEAL ALERT</h1>
-              <div style="border: 2px solid #dc2626; padding: 15px; border-radius: 8px; background: #fffbeb;">
-                <h2 style="margin-top: 0;">${newDeal.title}</h2>
-                <p style="font-size: 18px;">
+              <div style="border: 2px solid #dc2626; padding: 15px; border-radius: 8px; background: #fffbeb; text-align: center;">
+                <img src="${newDeal.image}" style="max-width: 100%; max-height: 300px; margin-bottom: 20px; object-fit: contain;" />
+                <h2 style="margin-top: 0; text-align: left;">${newDeal.title}</h2>
+                <p style="font-size: 18px; text-align: left;">
                   <strong>Price:</strong> <span style="color: #dc2626;">$${newDeal.price}</span> 
                   <span style="text-decoration: line-through; color: #666;">($${newDeal.originalPrice})</span>
                 </p>
-                <a href="${newDeal.url}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+                <div style="text-align: left; margin-top: 15px;">
+                    <a href="${newDeal.url}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
+                </div>
               </div>
             </div>`;
           
@@ -585,7 +597,7 @@ export default function Main() {
                     <div className="absolute top-0 right-0 bg-red-600 text-white text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-wider">Glitch</div>
                     {isAdmin && <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="absolute bottom-2 right-2 bg-slate-800 text-white p-2 rounded hover:bg-red-600 z-50"><Trash2 className="w-4 h-4" /></button>}
                     <a href={deal.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 w-full">
-                        <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400?text=No+Image'}} />
+                        <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400/red/white?text=GLITCH+DEAL&font=roboto'}} />
                         <div>
                         <h3 className="font-bold text-gray-900 text-lg leading-tight group-hover:text-red-600 transition-colors">{deal.title}</h3>
                         <div className="flex items-center gap-2 mt-1">
