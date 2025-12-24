@@ -1,25 +1,41 @@
 import React, { useState, useEffect } from 'react';
 import { 
   collection, getDocs, addDoc, deleteDoc, doc, updateDoc, 
-  query, orderBy, limit, setDoc, where, getDoc 
+  query, orderBy, limit, setDoc, where, getDoc, writeBatch 
 } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth'; 
 import { db, auth } from './firebase'; 
 import { 
   Search, ExternalLink, Loader2, AlertCircle, Filter, X, 
-  DollarSign, Zap, Trash2, Mail, Send, Edit, Clock, ShoppingCart, MinusCircle, UserCheck 
+  DollarSign, Zap, Trash2, Mail, Send, Edit, ShoppingCart, MinusCircle, UserCheck, RotateCcw, CheckSquare, Clock
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
 const STORE_MAP: Record<string, string> = {
-  'All Stores': 'all', 'Ace Hardware': 'ace', 'Acme Tools': 'acme', 'Amazon': 'amz',
-  'Home Depot': 'hd', "Lowe's": 'lowes', 'Walmart': 'walmart'
+  'All Stores': 'all', 
+  'Ace Hardware': 'ace', 
+  'Acme Tools': 'acme', 
+  'Amazon': 'amz',
+  'Home Depot': 'hd', 
+  "Lowe's": 'lowes', 
+  'Walmart': 'walmart',
+  'Northern Tool': 'northern',
+  'Ohio Power Tool': 'ohio-power',
+  'Tractor Supply': 'tractor-supply',
+  'Zoro': 'zoro'
 };
 
 const STORE_COLORS: Record<string, string> = {
-  'zoro': 'bg-blue-600', 'amz': 'bg-yellow-500', 'acme': 'bg-red-500', 
-  'hd': 'bg-orange-500', 'ace': 'bg-red-700', 'walmart': 'bg-[#0071DC]',
-  'lowes': 'bg-[#004990]', 'northern': 'bg-blue-800'
+  'zoro': 'bg-blue-600', 
+  'amz': 'bg-yellow-500', 
+  'acme': 'bg-red-500', 
+  'hd': 'bg-orange-500', 
+  'ace': 'bg-red-700', 
+  'walmart': 'bg-[#0071DC]',
+  'lowes': 'bg-[#004990]', 
+  'northern': 'bg-blue-800',
+  'ohio-power': 'bg-orange-700',
+  'tractor-supply': 'bg-red-800'
 };
 
 const DEAL_TYPES = ['All Types', 'Glitch', 'Daily Deal', 'BOGO', 'Free Gift', 'Bundle', 'Sale'];
@@ -51,7 +67,10 @@ function getTimeAgo(timestamp: number) {
 
 export default function Main() {
   const [deals, setDeals] = useState<Deal[]>([]);
-  const [glitchDeals, setGlitchDeals] = useState<Deal[]>([]);
+  
+  // 🔥 HERO DEALS (Glitches + Daily Deals)
+  const [heroDeals, setHeroDeals] = useState<Deal[]>([]);
+  
   const [draftDeals, setDraftDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const [featuredVideo, setFeaturedVideo] = useState<{videoId: string, title: string} | null>(null);
@@ -74,7 +93,11 @@ export default function Main() {
   // ADMIN STATE
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminTab, setAdminTab] = useState('post'); 
+  const [editingLiveDealId, setEditingLiveDealId] = useState<string | null>(null);
   
+  // MULTI-SELECT STATE
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   // FORM STATE
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
@@ -86,10 +109,8 @@ export default function Main() {
   const [store, setStore] = useState('amz');
   const [addToBatch, setAddToBatch] = useState(false); 
   
-  // NEW: TEST EMAIL STATE
+  // TEST EMAIL STATE
   const [testEmailAddress, setTestEmailAddress] = useState('dealfinder@tooldealsdaily.com');
-
-  // EMAIL BATCH STATE
   const [emailBatch, setEmailBatch] = useState<Deal[]>([]);
 
   // DRAFT EDITING
@@ -128,7 +149,26 @@ export default function Main() {
     } catch (e) { console.log("No video config found"); }
   };
 
-  // --- FETCH DEALS ---
+  // --- FETCH HERO DEALS (Glitches & Daily Deals) ---
+  useEffect(() => {
+    const fetchHeroDeals = async () => {
+        try {
+            // Fetch BOTH Glitches and Daily Deals for the top section
+            const qHero = query(
+                collection(db, 'deals'), 
+                where('dealType', 'in', ['Glitch', 'Daily Deal']), 
+                where('status', '==', 'active'), 
+                orderBy('timestamp', 'desc'), 
+                limit(20)
+            );
+            const snapHero = await getDocs(qHero);
+            setHeroDeals(snapHero.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
+        } catch (e) { console.log("Hero Fetch Error:", e); }
+    };
+    fetchHeroDeals();
+  }, []);
+
+  // --- FETCH REGULAR DEALS ---
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -146,12 +186,8 @@ export default function Main() {
         
         setDeals(items.filter(d => d.status !== 'draft'));
 
-        const qGlitch = query(collection(db, 'deals'), where('dealType', '==', 'Glitch'), where('status', '==', 'active'), orderBy('timestamp', 'desc'), limit(20));
-        const snapGlitch = await getDocs(qGlitch);
-        setGlitchDeals(snapGlitch.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
-
         if (isAdmin) {
-            const qDrafts = query(collection(db, 'deals'), where('status', '==', 'draft'), orderBy('timestamp', 'desc'));
+            const qDrafts = query(collection(db, 'deals'), where('status', '==', 'draft'));
             const snapDrafts = await getDocs(qDrafts);
             setDraftDeals(snapDrafts.docs.map(d => ({ id: d.id, ...d.data() } as Deal)));
         }
@@ -162,226 +198,170 @@ export default function Main() {
     fetchData();
   }, [dealLimit, activeStore, activeCategory, searchQuery, isAdmin]);
 
-  // --- HELPER: CONSTRUCT EMAIL BODY ---
-  const getEmailPayload = (recipients: any[], subject: string, html: string) => {
-      return {
-          sender: { name: "Tool Deals Bot", email: "dealfinder@tooldealsdaily.com" },
-          to: [{ email: "dealfinder@tooldealsdaily.com" }], 
-          bcc: recipients, 
-          subject: subject,
-          htmlContent: html
-      };
+  // --- HELPER: SELECTION TOGGLE ---
+  const toggleSelection = (id: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
+    setSelectedIds(newSet);
   };
 
-  // --- ACTION: SEND TEST PREVIEW (Current Form Data) ---
-  const sendTestPreview = async () => {
-    if (!testEmailAddress) return alert("Please enter a test email address!");
-    const API_KEY = process.env.REACT_APP_BREVO_API_KEY || "";
-    if (!API_KEY) return alert("❌ API KEY MISSING! Check .env file.");
+  // --- HELPER: BULK DELETE ---
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`⚠️ Are you sure you want to permanently DELETE ${selectedIds.size} deals?`)) return;
 
     try {
-        const dealData = { title, price: parseFloat(price) || 0, originalPrice: parseFloat(originalPrice) || 0, url, store, image };
+        const ids = Array.from(selectedIds);
         
-        const subjectLine = `[TEST] ${dealType}: ${title}`;
-        const html = `
-            <div style="font-family: Arial, sans-serif; padding: 20px;">
-              <h1 style="color: #ca8a04;">🧪 TEST EMAIL PREVIEW</h1>
-              <div style="border: 2px solid #ca8a04; padding: 15px; border-radius: 8px; background: #fffbeb; text-align: center;">
-                ${dealData.image ? `<img src="${dealData.image}" style="max-width: 100%; max-height: 250px; margin-bottom: 15px; object-fit: contain;" />` : ''}
-                <h2 style="margin-top: 0; text-align: left;">${dealData.title}</h2>
-                <p style="font-size: 18px; text-align: left;">
-                  <strong>Price:</strong> <span style="color: #dc2626;">$${dealData.price}</span> 
-                  <span style="text-decoration: line-through; color: #666;">($${dealData.originalPrice})</span>
-                </p>
-                <p style="text-align: left;">Store: ${dealData.store}</p>
-                <div style="text-align: left; margin-top: 15px;">
-                    <a href="${dealData.url}" style="background-color: #ca8a04; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
-                </div>
-              </div>
-            </div>`;
+        // Optimistic UI Update
+        setDeals(prev => prev.filter(d => !selectedIds.has(d.id!)));
+        setDraftDeals(prev => prev.filter(d => !selectedIds.has(d.id!)));
+        setHeroDeals(prev => prev.filter(d => !selectedIds.has(d.id!)));
+        setSelectedIds(new Set()); 
 
-        const body = getEmailPayload([{ email: testEmailAddress }], subjectLine, html);
-
-        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-            method: 'POST',
-            headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.message || "Brevo Rejected Request");
+        // Actual Delete
+        for (const id of ids) {
+            await deleteDoc(doc(db, 'deals', id));
         }
-        alert(`✅ Test Email Sent to ${testEmailAddress}`);
-    } catch (e: any) { alert("❌ TEST FAILED: " + e.message); }
+        alert("✅ Deals Deleted.");
+    } catch (e: any) { alert("Error deleting: " + e.message); }
   };
 
-  // --- ACTION: SEND BATCH EMAIL ---
+  // --- ACTION: QUEUE TEST EMAIL (Secure via Firestore) ---
+  const sendTestPreview = async () => {
+    if (!testEmailAddress) return alert("Please enter a test email address!");
+    try {
+        await addDoc(collection(db, 'mail_queue'), {
+            type: 'test_preview',
+            recipient: testEmailAddress,
+            dealData: { title, price: parseFloat(price) || 0, originalPrice: parseFloat(originalPrice) || 0, url, store, image },
+            status: 'pending', timestamp: Date.now()
+        });
+        alert(`✅ Request Sent! Check your Bot terminal.`);
+    } catch (e: any) { alert("❌ Request Failed: " + e.message); }
+  };
+
+  // --- ACTION: QUEUE BATCH BLAST (Secure via Firestore) ---
   const sendBatchEmail = async () => {
     if (emailBatch.length === 0) return alert("Batch is empty!");
     if (!window.confirm("Are you sure you want to blast this batch to ALL subscribers?")) return;
-    
-    const API_KEY = process.env.REACT_APP_BREVO_API_KEY || ""; 
     try {
-        const snapshot = await getDocs(collection(db, 'subscribers'));
-        
-        // --- SANITIZATION LOGIC ---
-        const recipients = snapshot.docs
-            .map(doc => {
-                const data = doc.data();
-                const rawEmail = data.email || doc.id;
-                if (rawEmail && typeof rawEmail === 'string' && rawEmail.includes('@') && rawEmail.includes('.')) {
-                    return { email: rawEmail.trim() };
-                }
-                return null;
-            })
-            .filter(r => r !== null);
-
-        if (recipients.length === 0) return alert("No VALID subscribers found!");
-
-        const firstTitle = emailBatch[0].title.split(' ').slice(0, 4).join(' ');
-        const countText = emailBatch.length > 1 ? ` + ${emailBatch.length - 1} more deals` : '';
-        const subjectLine = `🔥 Daily Roundup: ${firstTitle}...${countText}`;
-
-        const itemsHtml = emailBatch.map(item => `
-            <div style="border-bottom: 1px solid #eee; padding: 15px 0; display: flex; flex-direction: column; align-items: center;">
-                ${item.image ? `<img src="${item.image}" style="max-width: 100%; max-height: 180px; margin-bottom: 15px; object-fit: contain;" />` : ''}
-                <div style="width: 100%; text-align: left;">
-                    <h3 style="margin: 0 0 5px 0;">${item.title}</h3>
-                    <p style="margin: 0 0 10px 0;">
-                        <strong style="color: #dc2626; font-size: 16px;">$${item.price}</strong> 
-                        <span style="text-decoration: line-through; color: #888;">$${item.originalPrice}</span>
-                        <span style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px;">${item.store}</span>
-                    </p>
-                    <a href="${item.url}" style="background-color: #ca8a04; color: black; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px; display: inline-block;">View Deal</a>
-                </div>
-            </div>
-        `).join('');
-
-        const html = `
-            <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
-              <h1 style="color: #ca8a04; text-align: center;">🔥 Daily Deal Roundup</h1>
-              <div style="border: 2px solid #ca8a04; padding: 20px; border-radius: 8px; background: #fff;">${itemsHtml}</div>
-              <p style="text-align: center; margin-top: 30px; font-size: 12px; color: #888;">
-                 <a href="https://tooldealsdaily.com">View all deals on website</a>
-              </p>
-            </div>`;
-
-        const body = getEmailPayload(recipients, subjectLine, html);
-
-        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-            method: 'POST',
-            headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
-            body: JSON.stringify(body)
+        await addDoc(collection(db, 'mail_queue'), {
+            type: 'batch_blast',
+            deals: emailBatch,
+            status: 'pending', timestamp: Date.now()
         });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.message);
-        }
-
-        alert(`✅ Roundup Sent to ${recipients.length} subscribers!`);
+        alert(`✅ Roundup Queued! The bot is processing it now.`);
         setEmailBatch([]); 
-    } catch (e: any) { alert("❌ BATCH FAILED: " + e.message); }
+    } catch (e: any) { alert("❌ Queue Failed: " + e.message); }
   };
 
-  // --- ACTION: HANDLE POST DEAL (With Option to Blast Immediately) ---
+  const handleEditLiveDeal = (deal: Deal) => {
+      setEditingLiveDealId(deal.id!);
+      setTitle(deal.title);
+      setPrice(String(deal.price));
+      setOriginalPrice(String(deal.originalPrice));
+      setUrl(deal.url);
+      setImage(deal.image);
+      setCategory(deal.category);
+      setDealType(deal.dealType || 'Sale');
+      setStore(Object.keys(STORE_MAP).find(key => STORE_MAP[key] === deal.store) ? STORE_MAP[Object.keys(STORE_MAP).find(key => STORE_MAP[key] === deal.store)!] : 'amz');
+      setAdminTab('post');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const handlePostDeal = async (e: React.FormEvent, shouldBlast: boolean) => {
     e.preventDefault();
     if (!title || !price || !url) return alert("Missing Fields!");
-    if (shouldBlast && !window.confirm("WARNING: You are about to email ALL subscribers about this single deal. Proceed?")) return;
-
-    const newDeal: any = {
+    
+    const dealData: any = {
       title, price: parseFloat(price), originalPrice: parseFloat(originalPrice) || parseFloat(price),
       url, image: image || "https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto", 
       category, dealType, store, hot: true, timestamp: Date.now(), status: 'active'
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'deals'), newDeal);
-      
-      if (addToBatch) {
-          setEmailBatch(prev => [...prev, { ...newDeal, id: docRef.id }]);
-          alert("Deal Posted & Added to Batch! 🛒");
-          setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setAddToBatch(false);
-          return;
-      }
-
-      if (shouldBlast) {
-          const snapshot = await getDocs(collection(db, 'subscribers'));
-          // --- SANITIZATION LOGIC ---
-          const recipients = snapshot.docs
-            .map(doc => {
-                const data = doc.data();
-                const rawEmail = data.email || doc.id;
-                if (rawEmail && typeof rawEmail === 'string' && rawEmail.includes('@') && rawEmail.includes('.')) {
-                    return { email: rawEmail.trim() };
-                }
-                return null;
-            })
-            .filter(r => r !== null);
-
-          if (recipients.length === 0) {
-              alert("Deal Posted, but NO EMAILS SENT (No valid subscribers found).");
-              window.location.reload();
-              return;
+      if (editingLiveDealId) {
+          // UPDATE EXISTING DEAL
+          await updateDoc(doc(db, 'deals', editingLiveDealId), dealData);
+          const updatedDeal = { ...dealData, id: editingLiveDealId };
+          
+          setDeals(prev => prev.map(d => d.id === editingLiveDealId ? updatedDeal : d));
+          
+          // Hero Update
+          if (dealType === 'Glitch' || dealType === 'Daily Deal') {
+               setHeroDeals(prev => {
+                   const exists = prev.find(g => g.id === editingLiveDealId);
+                   if (exists) return prev.map(g => g.id === editingLiveDealId ? updatedDeal : g);
+                   return [updatedDeal, ...prev];
+               });
           }
-          
-          const subjectLine = `🔥 HOT DEAL: ${newDeal.title}`;
-          const html = `
-            <div style="font-family: Arial, sans-serif; padding: 20px;">
-              <h1 style="color: #dc2626;">🔥 HOT DEAL ALERT</h1>
-              <div style="border: 2px solid #dc2626; padding: 15px; border-radius: 8px; background: #fffbeb; text-align: center;">
-                <img src="${newDeal.image}" style="max-width: 100%; max-height: 300px; margin-bottom: 20px; object-fit: contain;" />
-                <h2 style="margin-top: 0; text-align: left;">${newDeal.title}</h2>
-                <p style="font-size: 18px; text-align: left;">
-                  <strong>Price:</strong> <span style="color: #dc2626;">$${newDeal.price}</span> 
-                  <span style="text-decoration: line-through; color: #666;">($${newDeal.originalPrice})</span>
-                </p>
-                <div style="text-align: left; margin-top: 15px;">
-                    <a href="${newDeal.url}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">👉 VIEW DEAL</a>
-                </div>
-              </div>
-            </div>`;
-          
-          const API_KEY = process.env.REACT_APP_BREVO_API_KEY || "";
-          const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-             method: 'POST',
-             headers: { 'accept': 'application/json', 'api-key': API_KEY, 'content-type': 'application/json' },
-             body: JSON.stringify(getEmailPayload(recipients, subjectLine, html))
-          });
-          
-          if (!response.ok) throw new Error("Brevo Error");
-          alert(`✅ Deal Posted & Emailed to ${recipients.length} people!`);
-      } else {
-          alert("✅ Deal Posted!");
-      }
 
-      window.location.reload(); 
-    } catch (error: any) { 
-        alert("Error: " + error.message);
-    }
+          // --- ADD TO BATCH LOGIC (UPDATED) ---
+          if (addToBatch) {
+              setEmailBatch(prev => {
+                  const exists = prev.find(d => d.id === editingLiveDealId);
+                  if (exists) return prev.map(d => d.id === editingLiveDealId ? updatedDeal : d);
+                  return [...prev, updatedDeal];
+              });
+              alert("✅ Deal Updated & Added to Batch! 🛒");
+          } else {
+              alert("✅ Deal Updated Successfully!");
+          }
+          // ------------------------------------
+
+          setEditingLiveDealId(null);
+      } else {
+          // POST NEW DEAL
+          if (shouldBlast && !window.confirm("WARNING: You are about to email ALL subscribers about this single deal. Proceed?")) return;
+          const docRef = await addDoc(collection(db, 'deals'), dealData);
+          const newDealWithId = { ...dealData, id: docRef.id };
+          setDeals(prev => [newDealWithId, ...prev]);
+          
+          if (dealType === 'Glitch' || dealType === 'Daily Deal') setHeroDeals(prev => [newDealWithId, ...prev]);
+
+          if (addToBatch) {
+              setEmailBatch(prev => [...prev, newDealWithId]);
+              alert("Deal Posted & Added to Batch! 🛒");
+          } else if (shouldBlast) {
+             await addDoc(collection(db, 'mail_queue'), {
+                 type: 'single_blast',
+                 deal: newDealWithId,
+                 status: 'pending', timestamp: Date.now()
+             });
+             alert(`✅ Deal Posted & Queued for Emailing!`);
+          } else {
+              alert("✅ Deal Posted!");
+          }
+      }
+      setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); setAddToBatch(false);
+    } catch (error: any) { alert("Error: " + error.message); }
   };
 
   const handlePublishDraft = async (deal: Deal) => {
     if (!draftAffiliateLink) return alert("Paste affiliate link first!");
     try {
-        await updateDoc(doc(db, 'deals', deal.id!), {
+        const updatedData = {
             url: draftAffiliateLink,
             image: draftImage || deal.image,
             price: draftPrice ? parseFloat(draftPrice) : deal.price,
             originalPrice: draftOriginalPrice ? parseFloat(draftOriginalPrice) : deal.originalPrice,
             status: 'active', timestamp: Date.now()
-        });
+        };
+        await updateDoc(doc(db, 'deals', deal.id!), updatedData);
+        setDraftDeals(prev => prev.filter(d => d.id !== deal.id));
+        setDeals(prev => [{ ...deal, ...updatedData } as Deal, ...prev]);
         setEditingDraftId(null); setDraftAffiliateLink(''); setDraftImage(''); setDraftPrice(''); setDraftOriginalPrice('');
-        window.location.reload();
     } catch (err) { alert("Error publishing: " + err); }
   };
 
   const handleDelete = async (id: string) => {
     if(!window.confirm("Delete this deal?")) return;
     await deleteDoc(doc(db, 'deals', id));
-    window.location.reload();
+    setDeals(prev => prev.filter(d => d.id !== id));
+    setHeroDeals(prev => prev.filter(d => d.id !== id));
+    setDraftDeals(prev => prev.filter(d => d.id !== id));
   };
 
   const handleSubscribe = async (e: React.FormEvent) => {
@@ -393,6 +373,7 @@ export default function Main() {
     } catch (err) {}
   };
 
+  // FILTERING LOGIC
   const filteredDeals = deals.filter(deal => {
     const searchLower = searchQuery.toLowerCase();
     const matchesSearch = (deal.title?.toLowerCase() || '').includes(searchLower) || (deal.store?.toLowerCase() || '').includes(searchLower);
@@ -413,7 +394,24 @@ export default function Main() {
   const sortedAdminStores = Object.entries(STORE_MAP).filter(([n, c]) => c !== 'all').sort((a, b) => a[0].localeCompare(b[0]));
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col">
+    <div className="min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col relative">
+      
+      {/* --- BULK ACTION BAR (Floating) --- */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-slate-900 text-white p-4 z-[100] shadow-2xl flex items-center justify-between animate-slideUp border-t-4 border-red-500">
+            <div className="flex items-center gap-4 px-4">
+                <span className="font-bold text-lg">{selectedIds.size} Deal{selectedIds.size > 1 ? 's' : ''} Selected</span>
+                <button onClick={() => setSelectedIds(new Set())} className="text-slate-400 text-sm hover:text-white underline">Cancel</button>
+            </div>
+            <div className="flex gap-2 px-4">
+                <button onClick={handleBulkDelete} className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-6 rounded shadow-lg flex items-center gap-2">
+                    <Trash2 className="w-5 h-5" /> DELETE ALL
+                </button>
+            </div>
+        </div>
+      )}
+
+      {/* NAVBAR */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -428,6 +426,7 @@ export default function Main() {
         </div>
       </div>
 
+      {/* ADMIN PANEL */}
       {isAdmin && (
         <div className="bg-slate-800 text-white p-6 border-b-4 border-yellow-500">
           <div className="max-w-7xl mx-auto">
@@ -445,11 +444,7 @@ export default function Main() {
             <div className="bg-slate-900 border border-slate-600 p-3 rounded mb-4 flex items-center gap-3">
                 <UserCheck className="text-slate-400" />
                 <label className="text-slate-400 text-xs">Test Email:</label>
-                <input 
-                    value={testEmailAddress} 
-                    onChange={e => setTestEmailAddress(e.target.value)} 
-                    className="bg-slate-800 text-white px-2 py-1 rounded border border-slate-600 text-sm flex-1"
-                />
+                <input value={testEmailAddress} onChange={e => setTestEmailAddress(e.target.value)} className="bg-slate-800 text-white px-2 py-1 rounded border border-slate-600 text-sm flex-1" />
             </div>
 
             {/* --- EMAIL BATCH CART --- */}
@@ -458,12 +453,8 @@ export default function Main() {
                     <div className="flex items-center justify-between mb-3">
                         <h3 className="font-bold text-yellow-400 flex items-center gap-2"><ShoppingCart /> Ready to Blast ({emailBatch.length})</h3>
                         <div className="flex gap-2">
-                            <button onClick={() => sendTestPreview()} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-2 rounded flex items-center gap-2">
-                                🧪 Send Test to Me
-                            </button>
-                            <button onClick={() => sendBatchEmail()} className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded flex items-center gap-2">
-                                <Send className="w-4 h-4" /> Send to ALL 🚀
-                            </button>
+                            <button onClick={() => sendTestPreview()} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-2 rounded flex items-center gap-2">🧪 Send Test</button>
+                            <button onClick={() => sendBatchEmail()} className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded flex items-center gap-2"><Send className="w-4 h-4" /> Send to ALL 🚀</button>
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -478,7 +469,13 @@ export default function Main() {
             )}
 
             {adminTab === 'post' ? (
-              <form onSubmit={e => handlePostDeal(e, false)} className="space-y-4 bg-slate-700 p-4 rounded-lg">
+              <form onSubmit={e => handlePostDeal(e, false)} className="space-y-4 bg-slate-700 p-4 rounded-lg relative">
+                {editingLiveDealId && (
+                    <div className="absolute top-2 right-2 flex gap-2">
+                        <span className="bg-yellow-500 text-black px-2 py-1 rounded text-xs font-bold animate-pulse">EDITING MODE</span>
+                        <button type="button" onClick={() => { setEditingLiveDealId(null); setTitle(''); setPrice(''); setOriginalPrice(''); setUrl(''); setImage(''); }} className="bg-gray-800 text-white px-2 py-1 rounded text-xs hover:bg-gray-600"><RotateCcw className="w-3 h-3 inline"/> Cancel</button>
+                    </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div><label className="block text-xs text-slate-400 mb-1">Deal Title</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="Title..." value={title} onChange={e => setTitle(e.target.value)} /></div>
                     <div><label className="block text-xs text-slate-400 mb-1">Affiliate Link</label><input className="w-full p-2 rounded bg-slate-900 border border-slate-600 focus:border-yellow-500 outline-none" placeholder="URL..." value={url} onChange={e => setUrl(e.target.value)} /></div>
@@ -510,60 +507,61 @@ export default function Main() {
                         <label htmlFor="emailChk" className="text-yellow-400 font-bold text-sm cursor-pointer select-none">Add to Email Batch? 🛒</label>
                     </div>
                 </div>
-
-                {/* --- NEW BUTTON ROW --- */}
                 <div className="flex gap-2 pt-2">
-                    <button 
-                        type="button" 
-                        onClick={() => sendTestPreview()} 
-                        className="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2"
-                    >
-                        🧪 Send Test Preview
-                    </button>
-
-                    <button 
-                        type="submit" 
-                        className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded text-lg flex-[2] shadow-lg hover:shadow-xl transition-all"
-                    >
-                        POST DEAL
-                    </button>
-
-                    {!addToBatch && (
-                         <button 
-                            type="button" 
-                            onClick={(e) => handlePostDeal(e, true)} 
-                            className="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all"
-                         >
-                            🔥 Post & Blast to ALL
-                         </button>
+                    <button type="button" onClick={() => sendTestPreview()} className="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2">🧪 Send Test Preview</button>
+                    <button type="submit" className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded text-lg flex-[2] shadow-lg hover:shadow-xl transition-all">{editingLiveDealId ? "UPDATE DEAL" : "POST DEAL"}</button>
+                    {!addToBatch && !editingLiveDealId && (
+                         <button type="button" onClick={(e) => handlePostDeal(e, true)} className="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-4 rounded text-sm flex-1 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all">🔥 Post & Blast to ALL</button>
                     )}
                 </div>
               </form>
             ) : (
                <div className="bg-slate-700 p-4 rounded-lg grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[500px] overflow-y-auto">
                  {draftDeals.map(draft => (
-                    <div key={draft.id} className="bg-slate-900 p-4 rounded border border-slate-600 flex flex-col gap-3">
-                        <div className="flex gap-3">
+                    <div key={draft.id} className={`p-4 rounded border flex flex-col gap-3 relative ${selectedIds.has(draft.id!) ? 'bg-yellow-900/40 border-yellow-500' : 'bg-slate-900 border-slate-600'}`}>
+                        {/* TICKER BOX */}
+                        <div className="absolute top-2 left-2 z-10">
+                            <input type="checkbox" checked={selectedIds.has(draft.id!)} onChange={() => toggleSelection(draft.id!)} className="w-5 h-5 cursor-pointer accent-yellow-500" />
+                        </div>
+
+                        <div className="flex gap-3 pl-6">
                             <img src={draft.image} className="w-16 h-16 object-contain bg-white rounded" />
                             <div className="flex-1">
                                 <h4 className="font-bold text-sm line-clamp-2">{draft.title}</h4>
-                                <span className="text-yellow-400 font-bold">${draft.price}</span>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <span className="text-yellow-400 font-bold">${draft.price}</span>
+                                    {/* STORE LABEL BADGE */}
+                                    <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${STORE_COLORS[draft.store] || 'bg-gray-600'}`}>
+                                        {draft.store}
+                                    </span>
+                                </div>
                             </div>
                         </div>
+
                         {editingDraftId === draft.id ? (
                             <div className="space-y-2">
-                                <input className="w-full p-2 text-black text-xs rounded" placeholder="Affiliate Link" value={draftAffiliateLink} onChange={e=>setDraftAffiliateLink(e.target.value)} />
-                                <input className="w-full p-2 text-black text-xs rounded" placeholder="Edit Price" value={draftPrice} onChange={e=>setDraftPrice(e.target.value)} />
+                                <a href={draft.url} target="_blank" className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 rounded mb-2 uppercase tracking-wide">
+                                    <ExternalLink className="w-3 h-3" /> ↗️ Open Source Listing
+                                </a>
+                                <input className="w-full p-2 text-black text-xs rounded" placeholder="Paste Affiliate Link Here..." value={draftAffiliateLink} onChange={e=>setDraftAffiliateLink(e.target.value)} />
+                                <input className="w-full p-2 text-black text-xs rounded" placeholder="Image URL (Optional)" value={draftImage} onChange={e=>setDraftImage(e.target.value)} />
                                 <div className="flex gap-2">
-                                    <button onClick={() => handlePublishDraft(draft)} className="flex-1 bg-green-600 text-xs py-1 rounded">Publish</button>
-                                    <button onClick={() => setEditingDraftId(null)} className="flex-1 bg-gray-600 text-xs py-1 rounded">Cancel</button>
+                                    <div className="flex-1"><label className="text-[10px] text-gray-400 uppercase font-bold">Sale Price ($)</label><input className="w-full p-2 text-black text-xs rounded" value={draftPrice} onChange={e=>setDraftPrice(e.target.value)} /></div>
+                                    <div className="flex-1"><label className="text-[10px] text-gray-400 uppercase font-bold">Original Price ($)</label><input className="w-full p-2 text-black text-xs rounded" value={draftOriginalPrice} onChange={e=>setDraftOriginalPrice(e.target.value)} /></div>
+                                </div>
+                                <div className="flex gap-2 pt-2">
+                                    <button onClick={() => handlePublishDraft(draft)} className="flex-[2] bg-green-600 hover:bg-green-500 text-white text-xs font-bold py-2 rounded">PUBLISH</button>
+                                    <button onClick={() => setEditingDraftId(null)} className="flex-1 bg-gray-600 hover:bg-gray-500 text-white text-xs font-bold py-2 rounded">Cancel</button>
+                                    <button onClick={() => handleDelete(draft.id!)} className="bg-red-800 hover:bg-red-700 text-white px-2 rounded"><Trash2 className="w-4 h-4" /></button>
                                 </div>
                             </div>
                         ) : (
-                            <div className="flex gap-2 mt-auto">
-                                <a href={draft.url} target="_blank" className="text-xs text-blue-400">Source</a>
-                                <button onClick={() => { setEditingDraftId(draft.id!); setDraftAffiliateLink(''); setDraftImage(draft.image); setDraftPrice(String(draft.price)); setDraftOriginalPrice(String(draft.originalPrice)); }} className="flex-1 bg-yellow-500 text-black text-xs py-1 rounded font-bold"><Edit className="w-3 h-3 inline" /> Edit</button>
-                                <button onClick={() => handleDelete(draft.id!)} className="bg-red-900 text-white p-1 rounded"><Trash2 className="w-3 h-3" /></button>
+                            <div className="space-y-2 mt-auto">
+                                <a href={draft.url} target="_blank" className="block text-center w-full bg-slate-800 hover:bg-slate-700 text-blue-400 text-xs py-1.5 rounded font-bold border border-slate-600 transition-colors">🔗 Visit Source</a>
+                                <div className="flex gap-2">
+                                    <button onClick={() => { setEditingDraftId(draft.id!); setDraftAffiliateLink(''); setDraftImage(draft.image); setDraftPrice(String(draft.price)); setDraftOriginalPrice(String(draft.originalPrice)); }} className="flex-1 bg-yellow-500 text-black text-xs py-2 rounded font-bold hover:bg-yellow-400"><Edit className="w-3 h-3 inline" /> Edit</button>
+                                    <button onClick={() => handleDelete(draft.id!)} className="bg-red-900 text-white px-3 rounded hover:bg-red-700"><Trash2 className="w-3 h-3" /></button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -584,31 +582,58 @@ export default function Main() {
         </aside>
 
         <div className="flex-1">
-          {/* GLITCHES */}
-          {glitchDeals.length > 0 && (
+          {/* HERO SECTION: GLITCHES & DAILY DEALS */}
+          {heroDeals.length > 0 && (
             <div className="mb-8">
-              <div className="flex items-center gap-2 mb-4 bg-red-600 text-white p-3 rounded-lg shadow-md animate-pulse">
-                <Zap className="w-6 h-6 fill-yellow-400 text-yellow-400" />
-                <h2 className="text-lg font-extrabold uppercase tracking-wider">Active Glitches & Fire Sales</h2>
+              <div className="flex items-center gap-2 mb-4 bg-slate-900 text-white p-3 rounded-lg shadow-md border-l-4 border-yellow-500">
+                <Zap className="w-6 h-6 fill-yellow-400 text-yellow-400 animate-pulse" />
+                <h2 className="text-lg font-extrabold uppercase tracking-wider">Urgent: Glitches & 24h Deals</h2>
               </div>
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {glitchDeals.map(deal => (
-                  <div key={deal.id} className="bg-white border-2 border-red-500 rounded-xl p-4 flex items-center gap-4 shadow-lg hover:shadow-xl transition-all group relative overflow-hidden">
-                    <div className="absolute top-0 right-0 bg-red-600 text-white text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-wider">Glitch</div>
-                    {isAdmin && <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="absolute bottom-2 right-2 bg-slate-800 text-white p-2 rounded hover:bg-red-600 z-50"><Trash2 className="w-4 h-4" /></button>}
-                    <a href={deal.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 w-full">
-                        <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400/red/white?text=GLITCH+DEAL&font=roboto'}} />
-                        <div>
-                        <h3 className="font-bold text-gray-900 text-lg leading-tight group-hover:text-red-600 transition-colors">{deal.title}</h3>
-                        <div className="flex items-center gap-2 mt-1">
-                            <span className="bg-slate-900 text-white text-xs px-2 py-0.5 rounded font-bold uppercase">{deal.store}</span>
-                            <span className="flex items-center gap-1 bg-red-100 text-red-600 text-[10px] px-2 py-0.5 rounded font-bold uppercase animate-pulse">🔥 Live Now</span>
+                {heroDeals.map(deal => {
+                  const isGlitch = deal.dealType === 'Glitch';
+                  const borderColor = isGlitch ? 'border-red-600' : 'border-blue-600';
+                  const glowColor = isGlitch ? 'shadow-[0_0_20px_rgba(220,38,38,0.5)]' : 'shadow-[0_0_20px_rgba(37,99,235,0.6)]';
+                  const badgeBg = isGlitch ? 'bg-red-600' : 'bg-blue-600';
+                  const badgeText = isGlitch ? 'Glitch' : 'Daily Deal';
+                  const subText = isGlitch ? '🔥 Fire Sale' : '🚨 24h Only';
+                  const subTextColor = isGlitch ? 'text-red-600' : 'text-blue-600';
+                  const subBgColor = isGlitch ? 'bg-red-100' : 'bg-blue-100';
+
+                  return (
+                    <div key={deal.id} className={`bg-white border-4 ${borderColor} rounded-xl p-4 flex items-center gap-4 ${glowColor} hover:scale-[1.02] transition-all group relative overflow-hidden`}>
+                        {/* CORNER BADGE */}
+                        <div className={`absolute top-0 right-0 ${badgeBg} text-white text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-wider z-10`}>
+                            {badgeText}
                         </div>
-                        <div className="mt-2 font-bold text-red-600 flex items-center gap-1">Check Price <ExternalLink className="w-4 h-4" /></div>
-                        </div>
-                    </a>
-                  </div>
-                ))}
+
+                        {/* ADMIN CONTROLS */}
+                        {isAdmin && (
+                            <div className="absolute bottom-2 right-2 flex gap-1 z-50">
+                                <button onClick={(e) => { e.preventDefault(); handleEditLiveDeal(deal); }} className="bg-yellow-500 text-black p-2 rounded hover:bg-yellow-400 shadow-lg"><Edit className="w-4 h-4" /></button>
+                                <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="bg-slate-800 text-white p-2 rounded hover:bg-red-600 shadow-lg"><Trash2 className="w-4 h-4" /></button>
+                            </div>
+                        )}
+
+                        <a href={deal.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 w-full">
+                            <img src={deal.image} alt={deal.title} className="w-24 h-24 object-contain" onError={(e: any) => {e.target.src = 'https://placehold.co/600x400/red/white?text=HOT+DEAL&font=roboto'}} />
+                            <div>
+                                <h3 className="font-bold text-gray-900 text-lg leading-tight group-hover:underline decoration-2 underline-offset-2 transition-all">{deal.title}</h3>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <span className="bg-slate-900 text-white text-xs px-2 py-0.5 rounded font-bold uppercase">{deal.store}</span>
+                                    <span className={`flex items-center gap-1 ${subBgColor} ${subTextColor} text-[10px] px-2 py-0.5 rounded font-bold uppercase animate-pulse`}>
+                                        {subText}
+                                    </span>
+                                </div>
+                                <div className={`mt-2 font-bold ${subTextColor} flex items-center gap-1`}>
+                                    Check Price <ExternalLink className="w-4 h-4" />
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -676,12 +701,33 @@ export default function Main() {
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6 mb-12">
                 {filteredDeals.map((deal) => (
-                  <div key={deal.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-xl transition-all group flex flex-col relative h-full">
+                  <div key={deal.id} className={`bg-white rounded-xl border overflow-hidden hover:shadow-xl transition-all group flex flex-col relative h-full 
+                    ${selectedIds.has(deal.id!) 
+                        ? 'border-4 border-yellow-500 z-20 shadow-2xl scale-[1.02]' 
+                        : deal.dealType === 'Glitch' 
+                            ? 'border-4 border-red-600 shadow-[0_0_20px_rgba(220,38,38,0.5)] z-10' 
+                            : (deal.dealType === 'Daily Deal' || deal.dealType === 'Daily')
+                                ? 'border-4 border-blue-600 shadow-[0_0_20px_rgba(37,99,235,0.6)] z-10 scale-[1.01]'
+                                : 'border-gray-200'
+                    }
+                  `}>
+                    
+                    {/* --- LIVE DEAL TICKER (ADMIN ONLY) --- */}
+                    {isAdmin && (
+                        <div className="absolute top-0 left-0 z-50 p-2">
+                             <input type="checkbox" checked={selectedIds.has(deal.id!)} onChange={() => toggleSelection(deal.id!)} className="w-6 h-6 cursor-pointer accent-yellow-500 shadow-lg" />
+                        </div>
+                    )}
+
                     <div className="relative h-48 p-4 flex items-center justify-center bg-white border-b border-gray-100">
-                      <span className={`absolute top-3 left-3 z-10 ${STORE_COLORS[deal.store] || 'bg-gray-600'} text-white text-[10px] font-bold px-2 py-1 rounded uppercase shadow-sm`}>{deal.store}</span>
+                      <span className={`absolute top-3 left-3 z-10 ${STORE_COLORS[deal.store] || 'bg-gray-600'} text-white text-[10px] font-bold px-2 py-1 rounded uppercase shadow-sm ${isAdmin ? 'ml-6' : ''}`}>{deal.store}</span>
                       <span className="absolute top-3 right-3 z-10 bg-white/90 backdrop-blur-sm text-gray-500 text-[10px] font-bold px-2 py-1 rounded shadow-sm border border-gray-100 flex items-center gap-1">🕒 {getTimeAgo(deal.timestamp)}</span>
                       {deal.dealType && deal.dealType !== 'Sale' && <span className={`absolute bottom-3 left-3 z-10 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm ${deal.dealType === 'Daily Deal' ? 'bg-blue-600' : 'bg-red-600'}`}>{deal.dealType}</span>}
-                      {isAdmin && <button onClick={(e) => { e.preventDefault(); handleDelete(deal.id!); }} className="absolute bottom-2 right-2 bg-slate-800 text-white p-2 rounded hover:bg-red-600 z-50"><Trash2 className="w-4 h-4" /></button>}
+                      {isAdmin && (
+                        <div className="absolute bottom-2 right-2 flex gap-1 z-50">
+                            <button onClick={(e) => { e.preventDefault(); handleEditLiveDeal(deal); }} className="bg-yellow-500 text-black p-2 rounded hover:bg-yellow-400 shadow-lg"><Edit className="w-4 h-4" /></button>
+                        </div>
+                      )}
                       <img src={deal.image} alt={deal.title} className="max-h-full max-w-full object-contain group-hover:scale-105 transition-transform duration-300" onError={(e: any) => {e.target.src = 'https://placehold.co/400x400?text=No+Image'}} />
                     </div>
                     <div className="p-4 flex flex-col flex-1 bg-white">
